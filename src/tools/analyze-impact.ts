@@ -1,4 +1,3 @@
-import { execSync } from "child_process";
 import {
   cachedPhoenixRoutes,
   cachedPhoenixControllers,
@@ -52,8 +51,6 @@ export async function analyzeImpact(config: RepoConfig, args: AnalyzeImpactArgs)
   if (repo === "backend") {
     // ── Backend target ──
     const targetLower = target.toLowerCase();
-    const isSchemaFile = targetLower.includes("/") && targetLower.endsWith(".ex");
-    const isController = targetLower.includes("controller");
 
     // Find matching schema
     const matchedSchema = schemas.find(
@@ -87,31 +84,55 @@ export async function analyzeImpact(config: RepoConfig, args: AnalyzeImpactArgs)
         r.path.includes(targetLower)
     );
 
-    // ── Dependencies (what this depends on) ──
-    if (direction === "both" || direction === "dependencies") {
-      sections.push("### Dependencies (this depends on)");
+    // Cross-repo: route → frontend API → store → component
+    const routePaths = matchedRoutes.map((r) => r.path.toLowerCase());
+    const matchedFeUsages = feUsages.filter((u) =>
+      routePaths.some((rp) => {
+        const normRoute = rp.replace(/:(\w+)/g, "");
+        const normFe = u.urlPattern.replace(/:(\w+)/g, "").replace(/\$\{[^}]+\}/g, "");
+        return pathOverlap(normRoute, normFe);
+      }) ||
+      matchedControllers.some(
+        (c) =>
+          u.urlPattern.toLowerCase().includes(c.controller.toLowerCase().replace("controller", "")) ||
+          u.module.toLowerCase().includes(targetLower.replace(".ex", "").replace("controller", ""))
+      )
+    );
+    const feModules = [...new Set(matchedFeUsages.map((u) => u.module.toLowerCase()))];
+    const matchedStores = stores.filter((s) =>
+      s.apiCalls.some((c) => feModules.some((m) => c.apiModule.toLowerCase().includes(m)))
+    );
+    const storeNames = [...new Set(matchedStores.map((s) => s.store.toLowerCase()))];
+    const matchedComponents = components.filter((c) =>
+      c.storeImports.some((si) => storeNames.some((sn) => si.toLowerCase().includes(sn)))
+    );
 
+    // ── Section 1: What is affected ──
+    sections.push("### What is affected");
+
+    if (direction === "both" || direction === "dependencies") {
+      sections.push("**Dependencies (this depends on):**");
       if (matchedSchema) {
-        sections.push(`Schema: **${matchedSchema.tableName}** (${matchedSchema.fields.length} fields)`);
+        sections.push(`- Schema: **${matchedSchema.tableName}** (${matchedSchema.fields.length} fields)`);
         if (matchedSchema.associations.length > 0) {
           sections.push(
             `  Associations: ${matchedSchema.associations.map((a) => `${a.type} ${a.name} → ${a.target}`).join(", ")}`
           );
         }
       }
-
       if (matchedContexts.length > 0) {
         const modules = [...new Set(matchedContexts.map((c) => c.module))];
-        sections.push(`Context modules: ${modules.join(", ")}`);
+        sections.push(`- Context modules: ${modules.join(", ")}`);
+      }
+      if (!matchedSchema && matchedContexts.length === 0) {
+        sections.push(`- None detected`);
       }
       sections.push("");
     }
 
-    // ── Dependents (what depends on this) ──
     if (direction === "both" || direction === "dependents") {
-      sections.push("### Dependents (affected by changes)");
+      sections.push("**Dependents (affected by changes):**");
 
-      // Backend chain: schema → context → controller → route
       if (matchedSchema) {
         const relatedContexts = contexts.filter(
           (c) =>
@@ -120,93 +141,100 @@ export async function analyzeImpact(config: RepoConfig, args: AnalyzeImpactArgs)
         );
         if (relatedContexts.length > 0) {
           const modules = [...new Set(relatedContexts.map((c) => c.module))];
-          sections.push(`**Context layer:** ${modules.join(", ")} (${relatedContexts.length} functions)`);
+          sections.push(`- Context layer: ${modules.join(", ")} (${relatedContexts.length} functions)`);
         }
       }
 
       if (matchedControllers.length > 0) {
-        sections.push(`**Controller layer:** ${matchedControllers.length} actions`);
+        sections.push(`- Controller layer: ${matchedControllers.length} actions`);
         for (const a of matchedControllers.slice(0, 10)) {
           sections.push(`  ${a.controller}.${a.action} → ${a.responseType}`);
         }
       }
 
       if (matchedRoutes.length > 0) {
-        sections.push(`**Route layer:** ${matchedRoutes.length} routes`);
+        sections.push(`- Route layer: ${matchedRoutes.length} routes`);
         for (const r of matchedRoutes.slice(0, 10)) {
           sections.push(`  ${r.method.padEnd(6)} ${r.path}`);
         }
       }
 
-      // Cross-repo: route → frontend API → store → component
-      const routePaths = matchedRoutes.map((r) => r.path.toLowerCase());
-      const matchedFeUsages = feUsages.filter((u) =>
-        routePaths.some((rp) => {
-          const normRoute = rp.replace(/:(\w+)/g, "");
-          const normFe = u.urlPattern.replace(/:(\w+)/g, "").replace(/\$\{[^}]+\}/g, "");
-          return pathOverlap(normRoute, normFe);
-        }) ||
-        matchedControllers.some(
-          (c) =>
-            u.urlPattern.toLowerCase().includes(c.controller.toLowerCase().replace("controller", "")) ||
-            u.module.toLowerCase().includes(targetLower.replace(".ex", "").replace("controller", ""))
-        )
-      );
-
       if (matchedFeUsages.length > 0) {
         const byModule = groupBy(matchedFeUsages, (u) => u.module);
-        sections.push(`**Frontend API layer:** ${matchedFeUsages.length} usages`);
+        sections.push(`- Frontend API layer: ${matchedFeUsages.length} usages`);
         for (const [mod, usages] of Object.entries(byModule)) {
           sections.push(`  ${mod}: ${usages.map((u) => `${u.httpMethod} ${u.urlPattern}`).join(", ")}`);
         }
       }
 
-      // Stores that call these API modules
-      const feModules = [...new Set(matchedFeUsages.map((u) => u.module.toLowerCase()))];
-      const matchedStores = stores.filter((s) =>
-        s.apiCalls.some((c) => feModules.some((m) => c.apiModule.toLowerCase().includes(m)))
-      );
-
       if (matchedStores.length > 0) {
         const byStore = groupBy(matchedStores, (s) => s.store);
-        sections.push(`**Store layer:** ${Object.keys(byStore).length} stores`);
+        sections.push(`- Store layer: ${Object.keys(byStore).length} stores`);
         for (const [store, actions] of Object.entries(byStore)) {
           sections.push(`  ${store}: ${actions.map((a) => a.action).join(", ")}`);
         }
       }
 
-      // Components that use these stores
-      const storeNames = [...new Set(matchedStores.map((s) => s.store.toLowerCase()))];
-      const matchedComponents = components.filter((c) =>
-        c.storeImports.some((si) => storeNames.some((sn) => si.toLowerCase().includes(sn)))
-      );
-
       if (matchedComponents.length > 0) {
-        sections.push(`**Component layer:** ${matchedComponents.length} components`);
+        sections.push(`- Component layer: ${matchedComponents.length} components`);
         for (const c of matchedComponents.slice(0, 15)) {
           sections.push(`  ${c.filePath}`);
         }
       }
 
       sections.push("");
+    }
 
-      // Risk assessment
-      sections.push("### Risk Assessment");
-      const totalFrontendImpact = matchedFeUsages.length + matchedStores.length + matchedComponents.length;
-      if (totalFrontendImpact === 0) {
-        sections.push("LOW — No frontend dependencies detected");
-      } else if (totalFrontendImpact < 5) {
-        sections.push(`MEDIUM — ${totalFrontendImpact} frontend artifacts affected`);
-      } else {
-        sections.push(`HIGH — ${totalFrontendImpact} frontend artifacts affected`);
-        sections.push("Recommend: check response shape compatibility before deploying");
-      }
+    // ── Section 2: Why ──
+    sections.push("### Why");
+    const whyParts: string[] = [];
+    if (matchedSchema) whyParts.push(`Schema "${matchedSchema.tableName}" is the data source`);
+    if (matchedControllers.length > 0) whyParts.push(`${matchedControllers.length} controller action(s) expose this as API`);
+    if (matchedFeUsages.length > 0) whyParts.push(`Frontend makes ${matchedFeUsages.length} call(s) to these endpoints`);
+    if (matchedStores.length > 0) whyParts.push(`${matchedStores.length} store(s) cache/transform this data`);
+    if (matchedComponents.length > 0) whyParts.push(`${matchedComponents.length} component(s) render this in UI`);
+    sections.push(whyParts.length > 0
+      ? `Changes propagate through: ${whyParts.join(" → ")}`
+      : "No dependency chain detected — changes are isolated."
+    );
+    sections.push("");
+
+    // ── Section 3: Risk Level ──
+    const totalFrontendImpact = matchedFeUsages.length + matchedStores.length + matchedComponents.length;
+    const riskLevel = totalFrontendImpact === 0 ? "LOW" : totalFrontendImpact < 5 ? "MEDIUM" : "HIGH";
+
+    sections.push(`### Risk Level: ${riskLevel}`);
+    if (riskLevel === "LOW") {
+      sections.push(`No frontend dependencies detected. Backend-only change.`);
+    } else if (riskLevel === "MEDIUM") {
+      sections.push(`${totalFrontendImpact} frontend artifact(s) affected. Verify API contract compatibility.`);
+    } else {
+      sections.push(`${totalFrontendImpact} frontend artifact(s) affected. High blast radius.`);
+    }
+    sections.push("");
+
+    // ── Section 4: Suggested Approach ──
+    sections.push("### Suggested Approach");
+    if (riskLevel === "LOW") {
+      sections.push("1. Make the change directly");
+      sections.push("2. Run `sync_contract` to verify no new mismatches");
+    } else if (riskLevel === "MEDIUM") {
+      sections.push("1. Check response shape — ensure no breaking changes to API contract");
+      sections.push("2. Update frontend API module if endpoint signature changed");
+      sections.push("3. Run `sync_contract` to verify");
+      sections.push("4. Test affected components manually");
+    } else {
+      sections.push("1. **Review all affected components** before changing");
+      sections.push("2. Consider backward-compatible changes (add fields, don't remove)");
+      sections.push("3. Update frontend API modules + stores in same PR");
+      sections.push("4. Run `sync_contract` to verify full contract integrity");
+      sections.push("5. Test all affected components + stores");
+      sections.push("6. `save_memory` the change for future reference");
     }
   } else {
     // ── Frontend target ──
     const targetLower = target.toLowerCase();
 
-    // Find matching API modules
     const matchedFeUsages = feUsages.filter(
       (u) =>
         u.filePath.includes(target) ||
@@ -214,33 +242,33 @@ export async function analyzeImpact(config: RepoConfig, args: AnalyzeImpactArgs)
         u.functionName.toLowerCase() === targetLower
     );
 
-    // Find matching stores
     const matchedStores = stores.filter(
       (s) =>
         s.filePath.includes(target) ||
         s.store.toLowerCase().includes(targetLower.replace(/\.(js|ts)$/, ""))
     );
 
-    // Find matching components
     const matchedComponents = components.filter(
       (c) =>
         c.filePath.includes(target) ||
         c.component.toLowerCase().includes(targetLower.replace(/\.vue$/, ""))
     );
 
+    // ── Section 1: What is affected ──
+    sections.push("### What is affected");
+
     if (direction === "both" || direction === "dependencies") {
-      sections.push("### Dependencies (this calls)");
+      sections.push("**Dependencies (this calls):**");
 
       if (matchedFeUsages.length > 0) {
-        sections.push(`**API calls:** ${matchedFeUsages.length}`);
+        sections.push(`- API calls: ${matchedFeUsages.length}`);
         for (const u of matchedFeUsages.slice(0, 15)) {
           sections.push(`  ${u.httpMethod} ${u.urlPattern} (${u.module}.${u.functionName})`);
         }
       }
 
-      // Store → API module dependencies
       if (matchedStores.length > 0) {
-        sections.push(`**Store API calls:**`);
+        sections.push(`- Store API calls:`);
         for (const s of matchedStores) {
           if (s.apiCalls.length > 0) {
             sections.push(`  ${s.store}.${s.action} → ${s.apiCalls.map((c) => `${c.apiModule}.${c.method}`).join(", ")}`);
@@ -248,7 +276,6 @@ export async function analyzeImpact(config: RepoConfig, args: AnalyzeImpactArgs)
         }
       }
 
-      // Trace to backend
       const allUrls = matchedFeUsages.map((u) => u.urlPattern);
       const storeApis = matchedStores.flatMap((s) => s.apiCalls);
       const matchedRoutes = routes.filter((r) =>
@@ -259,7 +286,7 @@ export async function analyzeImpact(config: RepoConfig, args: AnalyzeImpactArgs)
       );
 
       if (matchedRoutes.length > 0) {
-        sections.push(`**Backend routes hit:**`);
+        sections.push(`- Backend routes hit:`);
         for (const r of matchedRoutes.slice(0, 10)) {
           sections.push(`  ${r.method.padEnd(6)} ${r.path} → ${r.controller}.${r.action}`);
         }
@@ -269,23 +296,58 @@ export async function analyzeImpact(config: RepoConfig, args: AnalyzeImpactArgs)
     }
 
     if (direction === "both" || direction === "dependents") {
-      sections.push("### Dependents (who uses this)");
+      sections.push("**Dependents (who uses this):**");
 
-      // Components using matched stores
       if (matchedStores.length > 0) {
         const storeNamesList = matchedStores.map((s) => s.store.toLowerCase());
         const dependentComponents = components.filter((c) =>
           c.storeImports.some((si) => storeNamesList.some((sn) => si.toLowerCase().includes(sn)))
         );
         if (dependentComponents.length > 0) {
-          sections.push(`**Components using these stores:** ${dependentComponents.length}`);
+          sections.push(`- Components using these stores: ${dependentComponents.length}`);
           for (const c of dependentComponents.slice(0, 15)) {
             sections.push(`  ${c.filePath} (imports: ${c.storeImports.join(", ")})`);
           }
+        } else {
+          sections.push(`- No dependent components found`);
         }
+      } else {
+        sections.push(`- No dependent stores/components found`);
       }
 
       sections.push("");
+    }
+
+    // ── Section 2: Why ──
+    sections.push("### Why");
+    const feWhyParts: string[] = [];
+    if (matchedFeUsages.length > 0) feWhyParts.push(`${matchedFeUsages.length} API call(s) may break if endpoint changes`);
+    if (matchedStores.length > 0) feWhyParts.push(`${matchedStores.length} store(s) depend on this data`);
+    if (matchedComponents.length > 0) feWhyParts.push(`${matchedComponents.length} component(s) consume this`);
+    sections.push(feWhyParts.length > 0
+      ? feWhyParts.join(". ") + "."
+      : "No dependency chain detected — changes are isolated."
+    );
+    sections.push("");
+
+    // ── Section 3: Risk Level ──
+    const feTotalImpact = matchedFeUsages.length + matchedStores.length + matchedComponents.length;
+    const feRiskLevel = feTotalImpact === 0 ? "LOW" : feTotalImpact < 5 ? "MEDIUM" : "HIGH";
+
+    sections.push(`### Risk Level: ${feRiskLevel}`);
+    sections.push(`${feTotalImpact} artifact(s) in dependency chain.`);
+    sections.push("");
+
+    // ── Section 4: Suggested Approach ──
+    sections.push("### Suggested Approach");
+    if (feRiskLevel === "LOW") {
+      sections.push("1. Make the change directly");
+      sections.push("2. Verify no console errors in browser");
+    } else {
+      sections.push("1. Check all dependent components still render correctly");
+      sections.push("2. Verify store state updates propagate to UI");
+      sections.push("3. Run `sync_contract` if API call signatures changed");
+      sections.push("4. Test affected views manually");
     }
   }
 

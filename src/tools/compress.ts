@@ -287,12 +287,12 @@ export function compressImpact(
   components: ComponentImport[]
 ): string {
   const totalImpact = feCallCount + components.length;
-  const risk = totalImpact === 0 ? "THẤP" : totalImpact < 5 ? "TB" : "CAO";
+  const risk = totalImpact === 0 ? "LOW" : totalImpact < 5 ? "MEDIUM" : "HIGH";
   const compNames = components.map((c) => c.component).join(", ");
 
   const lines: string[] = [];
-  lines.push(`### Ảnh hưởng:`);
-  lines.push(`**${risk}** | BE: ${routeCount}routes, ${schemaCount}schemas | FE: ${feCallCount}calls, ${components.length}components`);
+  lines.push(`### Impact: ${risk}`);
+  lines.push(`BE: ${routeCount} routes, ${schemaCount} schemas | FE: ${feCallCount} calls, ${components.length} components`);
   if (components.length > 0) {
     lines.push(`Components: ${compNames}`);
   }

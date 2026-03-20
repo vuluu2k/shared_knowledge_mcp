@@ -130,13 +130,91 @@ export async function smartContext(config: RepoConfig, args: SmartContextArgs) {
       : Promise.resolve([]),
   ]);
 
-  // Memory recall (if relevant)
+  // Filter by keywords
+  const kwFilter = (text: string) =>
+    keywords.length === 0 || keywords.some((kw) => text.toLowerCase().includes(kw));
+
+  const taskWords = extractTaskWords(args.question);
+
+  // ── Filter all data by relevance ──
+  const filteredRoutes = routes.filter(
+    (r) => kwFilter(r.path) || kwFilter(r.controller) || kwFilter(r.action)
+  );
+  const filteredControllers = controllers.filter(
+    (a) => kwFilter(a.controller) || kwFilter(a.action)
+  );
+  const filteredSchemas = schemas.filter(
+    (s) => kwFilter(s.module) || kwFilter(s.tableName)
+  );
+  const filteredContexts = contexts.filter(
+    (c) => kwFilter(c.module) || kwFilter(c.name)
+  );
+  const filteredFeUsages = feUsages.filter(
+    (u) => kwFilter(u.module) || kwFilter(u.urlPattern) || kwFilter(u.functionName)
+  );
+  const filteredStores = stores.filter(
+    (s) => kwFilter(s.store) || kwFilter(s.action) || s.apiCalls.some((c) => kwFilter(c.apiModule))
+  );
+
+  // ── Section 1: Purpose ──
+  sections.push(`### Purpose`);
+  if (keywords.length > 0) {
+    const domainSummary: string[] = [];
+    if (filteredSchemas.length > 0) {
+      domainSummary.push(`${filteredSchemas.length} schema(s): ${filteredSchemas.map((s) => s.tableName).join(", ")}`);
+    }
+    if (filteredRoutes.length > 0) {
+      domainSummary.push(`${filteredRoutes.length} API endpoint(s)`);
+    }
+    if (filteredFeUsages.length > 0) {
+      domainSummary.push(`${filteredFeUsages.length} frontend call(s)`);
+    }
+    sections.push(`Domain **${keywords.join(", ")}** includes: ${domainSummary.join(" | ")}`);
+  } else {
+    sections.push(`General system overview requested.`);
+  }
+  sections.push("");
+
+  // ── Section 2: Flow ──
+  sections.push(`### Flow`);
+  if (filteredRoutes.length > 0 || filteredFeUsages.length > 0) {
+    // Build flow: Frontend → Route → Controller → Context → Schema
+    const flowParts: string[] = [];
+    if (filteredFeUsages.length > 0) {
+      const modules = [...new Set(filteredFeUsages.map((u) => u.module))].slice(0, 3);
+      flowParts.push(`Frontend(${modules.join(",")})`);
+    }
+    if (filteredRoutes.length > 0) {
+      const routeSample = filteredRoutes.slice(0, 2).map((r) => `${r.method} ${r.path}`).join(", ");
+      flowParts.push(`Routes(${routeSample})`);
+    }
+    if (filteredControllers.length > 0) {
+      const ctrls = [...new Set(filteredControllers.map((c) => c.controller))].slice(0, 3);
+      flowParts.push(`Controllers(${ctrls.join(",")})`);
+    }
+    if (filteredContexts.length > 0) {
+      const mods = [...new Set(filteredContexts.map((c) => c.module))].slice(0, 3);
+      flowParts.push(`Context(${mods.join(",")})`);
+    }
+    if (filteredSchemas.length > 0) {
+      flowParts.push(`Schema(${filteredSchemas.map((s) => s.tableName).join(",")})`);
+    }
+    sections.push(flowParts.join(" → "));
+  } else {
+    sections.push("No matching flow found for the given keywords.");
+  }
+  sections.push("");
+
+  // ── Section 3: Key Components ──
+  sections.push(`### Key Components`);
+
+  // Memory (if relevant)
   if (intents.includes("memory_recall") || intents.includes("domain_overview")) {
     for (const kw of keywords.slice(0, 2)) {
       try {
         const mem = await recallMemory({ query: kw, limit: 3 });
         if (mem.total > 0) {
-          sections.push(`### Memory (${mem.total} found for "${kw}")`);
+          sections.push(`**Memory** (${mem.total} for "${kw}"):`);
           for (const r of mem.results) {
             sections.push(`- **${r.title}** [${r.category}] ${r.tags.join(", ")}`);
             if (detailed) sections.push(`  ${r.content.slice(0, 200)}`);
@@ -147,82 +225,93 @@ export async function smartContext(config: RepoConfig, args: SmartContextArgs) {
     }
   }
 
-  // Filter by keywords
-  const kwFilter = (text: string) =>
-    keywords.length === 0 || keywords.some((kw) => text.toLowerCase().includes(kw));
-
-  // ── Relevance-scored compressed output ──
-  const taskWords = extractTaskWords(args.question);
-
   if (intents.some((i) => ["api_endpoint", "domain_overview", "contract_check"].includes(i))) {
-    const filtered = routes.filter(
-      (r) => kwFilter(r.path) || kwFilter(r.controller) || kwFilter(r.action)
-    );
-    const block = compressRoutes(filtered, keywords);
+    const block = compressRoutes(filteredRoutes, keywords);
     if (block) sections.push(block + "\n");
   }
 
   if (intents.some((i) => ["api_endpoint", "domain_overview"].includes(i))) {
-    const filtered = controllers.filter(
-      (a) => kwFilter(a.controller) || kwFilter(a.action)
-    );
-    const block = compressControllers(filtered, keywords);
+    const block = compressControllers(filteredControllers, keywords);
     if (block) sections.push(block + "\n");
   }
 
-  if (intents.some((i) => ["schema_info", "domain_overview"].includes(i)) && schemas.length > 0) {
-    const filtered = schemas.filter(
-      (s) => kwFilter(s.module) || kwFilter(s.tableName)
-    );
-    const block = compressSchemas(filtered, keywords, taskWords);
+  if (intents.some((i) => ["schema_info", "domain_overview"].includes(i)) && filteredSchemas.length > 0) {
+    const block = compressSchemas(filteredSchemas, keywords, taskWords);
     if (block) sections.push(block + "\n");
   }
 
-  if (intents.some((i) => ["domain_overview", "schema_info"].includes(i)) && contexts.length > 0) {
-    const filtered = contexts.filter(
-      (c) => kwFilter(c.module) || kwFilter(c.name)
-    );
-    const block = compressContexts(filtered, keywords);
+  if (intents.some((i) => ["domain_overview", "schema_info"].includes(i)) && filteredContexts.length > 0) {
+    const block = compressContexts(filteredContexts, keywords);
     if (block) sections.push(block + "\n");
   }
 
-  if (intents.some((i) => ["frontend_usage", "domain_overview", "contract_check"].includes(i)) && feUsages.length > 0) {
-    const filtered = feUsages.filter(
-      (u) => kwFilter(u.module) || kwFilter(u.urlPattern) || kwFilter(u.functionName)
-    );
-    const block = compressFrontend(filtered, keywords);
+  if (intents.some((i) => ["frontend_usage", "domain_overview", "contract_check"].includes(i)) && filteredFeUsages.length > 0) {
+    const block = compressFrontend(filteredFeUsages, keywords);
     if (block) sections.push(block + "\n");
   }
 
-  if (intents.some((i) => ["frontend_usage", "domain_overview"].includes(i)) && stores.length > 0) {
-    const filtered = stores.filter(
-      (s) => kwFilter(s.store) || kwFilter(s.action) || s.apiCalls.some((c) => kwFilter(c.apiModule))
-    );
-    if (filtered.length > 0) {
-      const block = compressStores(filtered, keywords);
-      if (block) sections.push(block + "\n");
+  if (intents.some((i) => ["frontend_usage", "domain_overview"].includes(i)) && filteredStores.length > 0) {
+    const block = compressStores(filteredStores, keywords);
+    if (block) sections.push(block + "\n");
+  }
+
+  // ── Section 4: Dependencies ──
+  sections.push(`### Dependencies`);
+  const deps: string[] = [];
+  if (filteredSchemas.length > 0) {
+    for (const s of filteredSchemas) {
+      if (s.associations.length > 0) {
+        deps.push(`${s.tableName} → ${s.associations.map((a) => `${a.type} ${a.name}(${a.target})`).join(", ")}`);
+      }
     }
   }
+  if (filteredStores.length > 0) {
+    const storeApis = filteredStores
+      .filter((s) => s.apiCalls.length > 0)
+      .map((s) => `${s.store} → ${s.apiCalls.map((c) => c.apiModule).join(",")}`);
+    deps.push(...storeApis);
+  }
+  if (deps.length > 0) {
+    sections.push(deps.join("\n"));
+  } else {
+    sections.push("No cross-domain dependencies detected.");
+  }
+  sections.push("");
 
-  // ── Contract mismatches ──
-  if (intents.includes("contract_check")) {
+  // ── Section 5: Risks ──
+  sections.push(`### Risks`);
+  const risks: string[] = [];
+
+  // Contract mismatches
+  if (intents.includes("contract_check") || intents.includes("domain_overview")) {
     const contracts = buildContractMap(routes, controllers, feUsages);
     const mismatched = findMismatches(contracts);
     const filtered = mismatched.filter(
       (c) => keywords.length === 0 || kwFilter(c.endpoint)
     );
 
-    sections.push(`### Contract Mismatches (${filtered.length})`);
-    if (filtered.length === 0) {
-      sections.push("No mismatches found.");
-    } else {
-      for (const c of filtered.slice(0, 15)) {
+    if (filtered.length > 0) {
+      risks.push(`**Contract mismatches (${filtered.length}):**`);
+      for (const c of filtered.slice(0, 10)) {
         for (const m of c.mismatches) {
-          sections.push(`[${m.severity.toUpperCase()}] ${m.detail}`);
+          risks.push(`- [${m.severity.toUpperCase()}] ${m.detail}`);
         }
       }
     }
-    sections.push("");
+  }
+
+  // Coverage gaps
+  if (filteredRoutes.length > 0 && filteredFeUsages.length === 0) {
+    risks.push(`- No frontend coverage for ${filteredRoutes.length} backend route(s)`);
+  }
+  if (filteredFeUsages.length > 0 && filteredRoutes.length === 0) {
+    risks.push(`- Frontend calls ${filteredFeUsages.length} endpoint(s) with no matching backend routes`);
+  }
+
+  if (risks.length > 0) {
+    sections.push(risks.join("\n"));
+  } else {
+    sections.push("No risks detected.");
   }
 
   return sections.join("\n");

@@ -38,7 +38,7 @@ const server = new McpServer({
 // ── Tool 1: get_api_schema ──
 server.tool(
   "get_api_schema",
-  "Parse Phoenix backend to extract all API endpoints with routes, controllers, params, response types, schemas, and context functions. Use filters to narrow results.",
+  "[DETAIL] Parse Phoenix backend to extract API endpoints with routes, controllers, params, response types, schemas, and context functions. Only use when smart_context doesn't provide enough detail. Use filters to narrow results.",
   {
     path_prefix: z
       .string()
@@ -95,7 +95,7 @@ server.tool(
 // ── Tool 2: get_ui_requirements ──
 server.tool(
   "get_ui_requirements",
-  "Parse Vue 3 frontend to extract all API endpoint usage from API modules, composable fetch calls, and Pinia stores. Shows what the frontend expects from the backend.",
+  "[DETAIL] Parse Vue 3 frontend to extract API endpoint usage from API modules, composable fetch calls, and Pinia stores. Only use when smart_context doesn't provide enough detail.",
   {
     api_module: z
       .string()
@@ -142,7 +142,7 @@ server.tool(
 // ── Tool 3: sync_contract ──
 server.tool(
   "sync_contract",
-  "Compare backend API routes with frontend API usage to find mismatches: missing endpoints, unused routes, method mismatches. The core contract analysis tool.",
+  "[CONTRACT] Compare backend API routes with frontend API usage to find mismatches: missing endpoints, unused routes, method mismatches. Use after code changes to verify contract integrity.",
   {
     severity: z
       .enum(["error", "warning", "info"])
@@ -186,7 +186,7 @@ server.tool(
 // ── Tool 4: generate_client ──
 server.tool(
   "generate_client",
-  "Generate TypeScript/JavaScript API client code from Phoenix backend routes. Supports class-based (BaseApi) or Vue composable styles matching BuilderX SPA patterns.",
+  "[GENERATE] Generate TypeScript/JavaScript API client code from Phoenix backend routes. Supports class-based (BaseApi) or Vue composable styles matching BuilderX SPA patterns.",
   {
     path_prefix: z
       .string()
@@ -235,7 +235,7 @@ server.tool(
 // ── Tool 5: generate_backend_code ──
 server.tool(
   "generate_backend_code",
-  "Generate Phoenix backend boilerplate (schema, context, controller, migration, route snippet) following BuilderX conventions: Citus sharding, UUID PKs, site_id scoping, FallbackController tuples.",
+  "[GENERATE] Generate Phoenix backend boilerplate (schema, context, controller, migration, route snippet) following BuilderX conventions: Citus sharding, UUID PKs, site_id scoping, FallbackController tuples.",
   {
     domain: z
       .string()
@@ -301,7 +301,7 @@ server.tool(
 // ── Tool 6: save_memory ──
 server.tool(
   "save_memory",
-  "Save business knowledge, task results, analysis, or decisions to long-term memory (GitHub repo). AI agents can recall this later across conversations.",
+  "[MEMORY] Save business knowledge, rules, decisions, or analysis to persistent memory. ALWAYS save when discovering new business rules or making architecture decisions. AI agents recall this across conversations.",
   {
     category: z
       .enum(["business", "tasks", "analysis", "decisions"])
@@ -349,7 +349,7 @@ server.tool(
 // ── Tool 7: recall_memory ──
 server.tool(
   "recall_memory",
-  "Search and retrieve saved memories by query, category, or tag. Use this to recall business context, past task results, or architecture decisions.",
+  "[PRIMARY for business rules] Search saved business rules, past decisions, domain knowledge. Use when question involves business logic, past decisions, or domain constraints. Use BEFORE coding to check existing rules.",
   {
     query: z
       .string()
@@ -461,7 +461,7 @@ server.tool(
 // ── Tool 10: search_code ──
 server.tool(
   "search_code",
-  "Search code across backend (Phoenix) and/or frontend (Vue) repos. Supports regex. Returns matching lines with context.",
+  "[LOW PRIORITY] Direct code search across repos. Only use when smart_context and analyze_impact don't provide enough detail. Prefer smart_context for understanding, analyze_impact for changes.",
   {
     query: z
       .string()
@@ -506,7 +506,7 @@ server.tool(
 // ── Tool 11: read_source ──
 server.tool(
   "read_source",
-  "Read a source file from backend or frontend repo. Returns content with line numbers. Can read specific line ranges for large files.",
+  "[LOW PRIORITY] Read raw source file. Only use when you need exact code AFTER smart_context/analyze_impact provided the file location. Do not use for exploration.",
   {
     repo: z
       .enum(["backend", "frontend"])
@@ -543,7 +543,7 @@ server.tool(
 // ── Tool 12: smart_context ──
 server.tool(
   "smart_context",
-  "ONE call answers any question about BuilderX codebase. Auto-analyzes routes, schemas, controllers, frontend API, stores, and memory. Returns compact markdown — saves 70%+ tokens vs calling multiple tools. USE THIS FIRST.",
+  "[PRIMARY] ONE call answers any question about system, API, flow, architecture. Auto-analyzes all layers (routes → schemas → controllers → frontend → stores → memory). Returns structured format: Purpose, Flow, Key Components, Dependencies, Risks. USE THIS FIRST before any other tool. Saves 70%+ tokens.",
   {
     question: z
       .string()
@@ -574,7 +574,7 @@ server.tool(
 // ── Tool 13: analyze_impact ──
 server.tool(
   "analyze_impact",
-  "Trace full dependency chain across backend + frontend for any file or function. Shows what breaks if you change something. Returns risk assessment.",
+  "[PRIMARY for changes] Use BEFORE modifying code, schema, or refactoring. Traces full dependency chain across backend + frontend. Returns structured format: What is affected, Why, Risk level (LOW/MEDIUM/HIGH), Suggested approach.",
   {
     target: z
       .string()
@@ -615,7 +615,7 @@ server.tool(
 // ── Tool 14: suggest_plan ──
 server.tool(
   "suggest_plan",
-  "Gợi ý plan thực hiện task dựa trên memory (business rules) + phân tích code hiện tại + đánh giá ảnh hưởng. Tự tra cứu memory, tìm code liên quan, sinh plan theo đúng conventions BuilderX.",
+  "[PLAN] Generate implementation plan for any task. Auto-checks memory (business rules) + analyzes current code + traces impact. Returns: business rules, related code, step-by-step plan, impact assessment, checklist. Follows BuilderX conventions.",
   {
     task: z
       .string()
