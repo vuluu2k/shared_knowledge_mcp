@@ -36,92 +36,105 @@ Agent: *gọi recall_memory* → lấy ngay từ GitHub
 
 ---
 
-## Cài đặt
+## Cài đặt nhanh (Khuyên dùng)
 
-### Cách 1: Cài tự động (khuyên dùng)
+Chạy script tự động — tự clone, cài dependencies, build, cấu hình IDE cho bạn.
 
-Chạy 1 lệnh, script sẽ tự lo hết:
+### macOS / Linux
 
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/vuluu2k/shared_knowledge_mcp/main/install.sh)
-```
-
-Hoặc nếu đã clone repo:
-
+Nếu đã clone repo:
 ```bash
 ./install.sh
 ```
 
-**Script sẽ tự động:**
-1. Kiểm tra Node.js >= 18 (cài nếu thiếu)
-2. Clone repo + cài dependencies + build TypeScript
-3. Hỏi đường dẫn repo backend/frontend
-4. Hỏi cấu hình GitHub memory (owner, repo name, token)
-5. Chọn IDE để cấu hình (Claude Desktop/Code, Cursor, Windsurf, Augment, Codex)
-6. Tạo repo memory private trên GitHub (nếu muốn)
-7. Xác nhận mọi thứ hoạt động
-
-```
-╔══════════════════════════════════════════════════╗
-║  Shared Knowledge MCP - Cai dat                 ║
-║  Ket noi Phoenix backend + Vue 3 frontend       ║
-║  13 tools | Cache thong minh | Memory GitHub     ║
-╚══════════════════════════════════════════════════╝
-
-[OK] Node.js v20.11.0 tai /usr/local/bin/node
-[OK] git 2.43.0 detected
-[OK] GitHub CLI da dang nhap: LuuCongQuangVu
-
-── Cau hinh ──
-
-  BUILDERX_API_PATH [/path/to/builderx_api]: ↵
-  BUILDERX_SPA_PATH [/path/to/builderx_spa]: ↵
-  MEMORY_REPO_OWNER [LuuCongQuangVu]: ↵
-  MEMORY_REPO_NAME [shared-knowledge-memory]: ↵
-
-── Chon IDE/Tool de cau hinh ──
-
-  1) Claude Desktop
-  2) Claude Code (CLI)
-  3) Cursor
-  ...
-  7) Tat ca
-
-  Tao repo memory tren GitHub ngay bay gio? (Y/n): Y
-[OK] Repo memory da tao: github.com/LuuCongQuangVu/shared-knowledge-memory (private)
-
-═══════════════════════════════════════════════════
-  Cai dat thanh cong!
-═══════════════════════════════════════════════════
+Hoặc tải về rồi chạy:
+```bash
+curl -fsSL https://raw.githubusercontent.com/vuluu2k/shared_knowledge_mcp/main/install.sh -o install.sh && bash install.sh
 ```
 
-### Cách 2: Cài thủ công
+Script sẽ hướng dẫn bạn:
+1. Cài Node.js (nếu chưa có)
+2. Clone MCP server + build TypeScript
+3. Nhập đường dẫn repo backend/frontend
+4. Nhập cấu hình GitHub memory (owner, repo name, token — **đều có thể bỏ qua**, set sau)
+5. Chọn IDE để cấu hình
+6. Tạo repo memory private trên GitHub (tự động, hỏi trước khi tạo)
+
+**Gỡ cài đặt:**
+```bash
+./install.sh --uninstall
+```
+
+---
+
+## Cập nhật
+
+Cập nhật lên phiên bản mới nhất:
 
 ```bash
-# Clone
-git clone https://github.com/vuluu2k/shared_knowledge_mcp.git
-cd shared_knowledge_mcp
-
-# Build
-npm install
-npm run build
-
-# Test
-npm start
+# Tự tìm thư mục cài đặt
+~/.shared-knowledge-mcp/update.sh
 ```
 
-Sau đó thêm vào `.claude/settings.json`:
+Hoặc chỉ định đường dẫn:
+```bash
+./update.sh ~/.shared-knowledge-mcp
+```
+
+Hoặc tải về rồi chạy:
+```bash
+curl -fsSL https://raw.githubusercontent.com/vuluu2k/shared_knowledge_mcp/main/update.sh | bash
+```
+
+---
+
+## Cài đặt thủ công
+
+```bash
+git clone https://github.com/vuluu2k/shared_knowledge_mcp.git
+cd shared_knowledge_mcp
+npm install
+npm run build
+```
+
+## Biến môi trường
+
+| Biến | Bắt buộc | Mô tả |
+|------|----------|-------|
+| `BUILDERX_API_PATH` | Không | Đường dẫn repo Phoenix backend (mặc định: `../builderx_api`) |
+| `BUILDERX_SPA_PATH` | Không | Đường dẫn repo Vue 3 frontend (mặc định: `../builderx_spa`) |
+| `MEMORY_REPO_OWNER` | Không* | GitHub username cho memory repo |
+| `MEMORY_REPO_NAME` | Không | Tên repo memory (mặc định: `shared-knowledge-memory`) |
+| `MEMORY_REPO_TOKEN` | Không* | GitHub personal access token (quyền `repo`) |
+| `MEMORY_REPO_PATH` | Không | Thư mục local clone memory (mặc định: `~/.shared-knowledge-memory`) |
+
+> \* Nếu đã đăng nhập `gh auth login`, không cần set `MEMORY_REPO_OWNER` và `MEMORY_REPO_TOKEN` — tự detect.
+
+---
+
+## Cấu hình theo từng IDE / AI Tool
+
+> Thay `/đường-dẫn-tuyệt-đối/shared_knowledge_mcp/dist/index.js` bằng đường dẫn thực tế.
+> Ví dụ: `/Users/username/.shared-knowledge-mcp/dist/index.js`
+
+### 1. Claude Desktop
+
+Mở Settings > Developer > Edit Config, hoặc sửa file trực tiếp:
+
+- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+- **Linux**: `~/.config/Claude/claude_desktop_config.json`
 
 ```json
 {
   "mcpServers": {
     "shared-knowledge": {
       "command": "node",
-      "args": ["<đường-dẫn>/shared_knowledge_mcp/dist/index.js"],
+      "args": ["/đường-dẫn-tuyệt-đối/shared_knowledge_mcp/dist/index.js"],
       "env": {
         "BUILDERX_API_PATH": "/path/to/builderx_api",
         "BUILDERX_SPA_PATH": "/path/to/builderx_spa",
-        "MEMORY_REPO_OWNER": "github-username-cua-ban",
+        "MEMORY_REPO_OWNER": "<github-username>",
         "MEMORY_REPO_NAME": "shared-knowledge-memory"
       }
     }
@@ -129,25 +142,170 @@ Sau đó thêm vào `.claude/settings.json`:
 }
 ```
 
-### Cập nhật
+Restart Claude Desktop. Các MCP tools sẽ xuất hiện trong chat.
+
+---
+
+### 2. Claude Code (CLI)
+
+Chạy lệnh sau trong terminal:
 
 ```bash
-# Tự động
-~/.shared-knowledge-mcp/update.sh
-
-# Hoặc chỉ định thư mục
-./update.sh /path/to/shared-knowledge-mcp
+claude mcp add shared-knowledge \
+  -e BUILDERX_API_PATH=/path/to/builderx_api \
+  -e BUILDERX_SPA_PATH=/path/to/builderx_spa \
+  -e MEMORY_REPO_OWNER=<github-username> \
+  -e MEMORY_REPO_NAME=shared-knowledge-memory \
+  -- node /đường-dẫn-tuyệt-đối/shared_knowledge_mcp/dist/index.js
 ```
 
-Script sẽ pull code mới, cài lại dependencies, build lại TypeScript, và xác nhận hoạt động.
+Hoặc tạo file `.claude.json` tại thư mục project:
 
-### Gỡ cài đặt
+```json
+{
+  "mcpServers": {
+    "shared-knowledge": {
+      "command": "node",
+      "args": ["/đường-dẫn-tuyệt-đối/shared_knowledge_mcp/dist/index.js"],
+      "env": {
+        "BUILDERX_API_PATH": "/path/to/builderx_api",
+        "BUILDERX_SPA_PATH": "/path/to/builderx_spa",
+        "MEMORY_REPO_OWNER": "<github-username>",
+        "MEMORY_REPO_NAME": "shared-knowledge-memory"
+      }
+    }
+  }
+}
+```
 
+Hoặc cấu hình global tại `~/.claude.json` (áp dụng cho mọi project).
+
+Kiểm tra đã cài thành công:
 ```bash
-./install.sh --uninstall
+claude mcp list
 ```
 
-Xóa thư mục cài đặt + xóa cấu hình khỏi tất cả IDE.
+---
+
+### 3. Cursor
+
+**Bước 1:** Mở Cursor Settings: `Cmd + ,` (Mac) hoặc `Ctrl + ,` (Windows/Linux)
+
+**Bước 2:** Tìm mục **"MCP Servers"** trong sidebar
+
+**Bước 3:** Click **"Add new MCP Server"**
+
+**Bước 4:** Tạo file `.cursor/mcp.json` tại thư mục gốc project:
+
+```json
+{
+  "mcpServers": {
+    "shared-knowledge": {
+      "command": "node",
+      "args": ["/đường-dẫn-tuyệt-đối/shared_knowledge_mcp/dist/index.js"],
+      "env": {
+        "BUILDERX_API_PATH": "/path/to/builderx_api",
+        "BUILDERX_SPA_PATH": "/path/to/builderx_spa",
+        "MEMORY_REPO_OWNER": "<github-username>",
+        "MEMORY_REPO_NAME": "shared-knowledge-memory"
+      }
+    }
+  }
+}
+```
+
+Hoặc cấu hình global tại `~/.cursor/mcp.json`.
+
+**Bước 5:** Restart Cursor. Kiểm tra trong Settings > MCP Servers — sẽ thấy trạng thái **"Connected"** màu xanh.
+
+---
+
+### 4. Windsurf
+
+**Bước 1:** Mở Windsurf Settings: `Cmd + ,` (Mac) hoặc `Ctrl + ,` (Windows/Linux)
+
+**Bước 2:** Tìm mục **"Cascade"** > **"MCP Servers"**
+
+**Bước 3:** Click **"Add Server"** > chọn **"Custom"**
+
+**Bước 4:** Tạo file `~/.codeium/windsurf/mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "shared-knowledge": {
+      "command": "node",
+      "args": ["/đường-dẫn-tuyệt-đối/shared_knowledge_mcp/dist/index.js"],
+      "env": {
+        "BUILDERX_API_PATH": "/path/to/builderx_api",
+        "BUILDERX_SPA_PATH": "/path/to/builderx_spa",
+        "MEMORY_REPO_OWNER": "<github-username>",
+        "MEMORY_REPO_NAME": "shared-knowledge-memory"
+      }
+    }
+  }
+}
+```
+
+**Bước 5:** Restart Windsurf. Trong Cascade chat, gõ `@` sẽ thấy các tools.
+
+---
+
+### 5. Augment (VS Code Extension)
+
+**Bước 1:** Cài extension **Augment** từ VS Code Marketplace
+
+**Bước 2:** Mở Command Palette: `Cmd + Shift + P` > tìm **"Augment: Edit MCP Settings"**
+
+**Bước 3:** File settings sẽ mở ra. Thêm cấu hình:
+
+```json
+{
+  "mcpServers": {
+    "shared-knowledge": {
+      "command": "node",
+      "args": ["/đường-dẫn-tuyệt-đối/shared_knowledge_mcp/dist/index.js"],
+      "env": {
+        "BUILDERX_API_PATH": "/path/to/builderx_api",
+        "BUILDERX_SPA_PATH": "/path/to/builderx_spa",
+        "MEMORY_REPO_OWNER": "<github-username>",
+        "MEMORY_REPO_NAME": "shared-knowledge-memory"
+      }
+    }
+  }
+}
+```
+
+**Bước 4:** Restart VS Code. Trong Augment chat panel sẽ thấy các tools MCP.
+
+---
+
+### 6. Codex (OpenAI CLI)
+
+Thêm vào file `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.shared-knowledge]
+command = "node"
+args = ["/đường-dẫn-tuyệt-đối/shared_knowledge_mcp/dist/index.js"]
+env = { "BUILDERX_API_PATH" = "/path/to/builderx_api", "BUILDERX_SPA_PATH" = "/path/to/builderx_spa", "MEMORY_REPO_OWNER" = "<github-username>", "MEMORY_REPO_NAME" = "shared-knowledge-memory" }
+```
+
+Kiểm tra:
+```bash
+codex mcp list
+```
+
+---
+
+### Kiểm tra MCP hoạt động
+
+Sau khi cấu hình, thử hỏi AI agent:
+- "Order API hoạt động thế nào?" → gọi `smart_context`
+- "Sửa customer schema thì hỏng gì?" → gọi `analyze_impact`
+- "Lưu lại: discount tối đa 30%" → gọi `save_memory`
+
+Nếu AI agent trả lời được với dữ liệu từ cả backend + frontend → cài đặt thành công.
 
 ---
 
@@ -466,17 +624,6 @@ Không có MCP: 20+ file reads, ~25,000 tokens
 ```
 
 ---
-
-## Biến môi trường
-
-| Biến | Bắt buộc | Mặc định | Mô tả |
-|------|----------|---------|-------|
-| `BUILDERX_API_PATH` | Không | `../builderx_api` | Đường dẫn repo Phoenix backend |
-| `BUILDERX_SPA_PATH` | Không | `../builderx_spa` | Đường dẫn repo Vue 3 frontend |
-| `MEMORY_REPO_OWNER` | Không | Tự detect từ `gh` CLI | GitHub username cho memory repo |
-| `MEMORY_REPO_NAME` | Không | `shared-knowledge-memory` | Tên repo memory |
-| `MEMORY_REPO_TOKEN` | Không | Dùng `gh` CLI auth | GitHub personal access token |
-| `MEMORY_REPO_PATH` | Không | `~/.shared-knowledge-memory` | Thư mục local clone memory |
 
 ## Cấu trúc dự án
 
