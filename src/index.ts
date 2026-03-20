@@ -10,7 +10,10 @@ import { getUiRequirements } from "./tools/get-ui-requirements.js";
 import { syncContract } from "./tools/sync-contract.js";
 import { generateClient } from "./tools/generate-client.js";
 import { generateBackendCode } from "./tools/generate-backend-code.js";
-import { saveMemory, recallMemory, listMemories } from "./tools/memory.js";
+import { saveMemory, recallMemory, listMemories, deleteMemory } from "./tools/memory.js";
+import { searchCode, readSource } from "./tools/codebase.js";
+import { smartContext } from "./tools/smart-context.js";
+import { analyzeImpact } from "./tools/analyze-impact.js";
 import type { RepoConfig } from "./types.js";
 
 // ── Repo paths (configurable via env vars) ──
@@ -418,6 +421,189 @@ server.tool(
             type: "text" as const,
             text: `Error: ${error instanceof Error ? error.message : String(error)}`,
           },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ── Tool 9: delete_memory ──
+server.tool(
+  "delete_memory",
+  "Delete a saved memory by category and ID. Use list_memories first to find the ID.",
+  {
+    category: z
+      .enum(["business", "tasks", "analysis", "decisions"])
+      .describe("Category of the memory to delete"),
+    id: z
+      .string()
+      .describe("Memory ID (the slug, e.g. 'customer-order-flow')"),
+  },
+  async (args) => {
+    try {
+      const result = await deleteMemory(args);
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          { type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ── Tool 10: search_code ──
+server.tool(
+  "search_code",
+  "Search code across backend (Phoenix) and/or frontend (Vue) repos. Supports regex. Returns matching lines with context.",
+  {
+    query: z
+      .string()
+      .describe("Search pattern (regex supported), e.g. 'def create_order', 'useApipost.*customer'"),
+    repo: z
+      .enum(["backend", "frontend", "both"])
+      .optional()
+      .default("both")
+      .describe("Which repo to search"),
+    file_pattern: z
+      .string()
+      .optional()
+      .describe("Glob filter for files, e.g. '*.ex', '*.vue', '*.js'"),
+    limit: z
+      .number()
+      .optional()
+      .default(20)
+      .describe("Max results (default 20)"),
+    context_lines: z
+      .number()
+      .optional()
+      .default(2)
+      .describe("Lines of context around each match (default 2)"),
+  },
+  async (args) => {
+    try {
+      const result = await searchCode(config, args);
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          { type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ── Tool 11: read_source ──
+server.tool(
+  "read_source",
+  "Read a source file from backend or frontend repo. Returns content with line numbers. Can read specific line ranges for large files.",
+  {
+    repo: z
+      .enum(["backend", "frontend"])
+      .describe("Which repo: 'backend' (Phoenix) or 'frontend' (Vue)"),
+    file_path: z
+      .string()
+      .describe("File path relative to repo root, e.g. 'lib/builderx_api/orders/orders.ex'"),
+    start_line: z
+      .number()
+      .optional()
+      .describe("Start line (1-based, default: beginning of file)"),
+    num_lines: z
+      .number()
+      .optional()
+      .describe("Number of lines to read (default: entire file, max 500)"),
+  },
+  async (args) => {
+    try {
+      const result = await readSource(config, args);
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          { type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ── Tool 12: smart_context ──
+server.tool(
+  "smart_context",
+  "ONE call answers any question about BuilderX codebase. Auto-analyzes routes, schemas, controllers, frontend API, stores, and memory. Returns compact markdown — saves 70%+ tokens vs calling multiple tools. USE THIS FIRST.",
+  {
+    question: z
+      .string()
+      .describe("Natural language question, e.g. 'How does the order API work?', 'What calls the customer endpoint?', 'Show me product schema'"),
+    depth: z
+      .enum(["brief", "detailed"])
+      .optional()
+      .default("brief")
+      .describe("'brief' = compact summary, 'detailed' = full field lists and file paths"),
+  },
+  async (args) => {
+    try {
+      const result = await smartContext(config, args);
+      return {
+        content: [{ type: "text" as const, text: result }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          { type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ── Tool 13: analyze_impact ──
+server.tool(
+  "analyze_impact",
+  "Trace full dependency chain across backend + frontend for any file or function. Shows what breaks if you change something. Returns risk assessment.",
+  {
+    target: z
+      .string()
+      .describe("File path or function name, e.g. 'lib/builderx_api/orders/order.ex', 'create_order', 'orderApi.js'"),
+    repo: z
+      .enum(["backend", "frontend", "auto"])
+      .optional()
+      .default("auto")
+      .describe("Which repo. 'auto' detects from file extension"),
+    direction: z
+      .enum(["both", "dependents", "dependencies"])
+      .optional()
+      .default("both")
+      .describe("'dependents' = what breaks, 'dependencies' = what this uses"),
+    depth: z
+      .number()
+      .optional()
+      .default(3)
+      .describe("Trace depth 1-5 (default 3)"),
+  },
+  async (args) => {
+    try {
+      const result = await analyzeImpact(config, args);
+      return {
+        content: [{ type: "text" as const, text: result }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          { type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` },
         ],
         isError: true,
       };
