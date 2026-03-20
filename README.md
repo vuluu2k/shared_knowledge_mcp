@@ -38,15 +38,79 @@ Agent: *gọi recall_memory* → lấy ngay từ GitHub
 
 ## Cài đặt
 
+### Cách 1: Cài tự động (khuyên dùng)
+
+Chạy 1 lệnh, script sẽ tự lo hết:
+
 ```bash
-cd shared_knowledge_mcp
-npm install
-npm run build
+bash <(curl -fsSL https://raw.githubusercontent.com/vuluu2k/shared_knowledge_mcp/main/install.sh)
 ```
 
-## Kết nối Claude Code
+Hoặc nếu đã clone repo:
 
-Thêm vào `.claude/settings.json`:
+```bash
+./install.sh
+```
+
+**Script sẽ tự động:**
+1. Kiểm tra Node.js >= 18 (cài nếu thiếu)
+2. Clone repo + cài dependencies + build TypeScript
+3. Hỏi đường dẫn repo backend/frontend
+4. Hỏi cấu hình GitHub memory (owner, repo name, token)
+5. Chọn IDE để cấu hình (Claude Desktop/Code, Cursor, Windsurf, Augment, Codex)
+6. Tạo repo memory private trên GitHub (nếu muốn)
+7. Xác nhận mọi thứ hoạt động
+
+```
+╔══════════════════════════════════════════════════╗
+║  Shared Knowledge MCP - Cai dat                 ║
+║  Ket noi Phoenix backend + Vue 3 frontend       ║
+║  13 tools | Cache thong minh | Memory GitHub     ║
+╚══════════════════════════════════════════════════╝
+
+[OK] Node.js v20.11.0 tai /usr/local/bin/node
+[OK] git 2.43.0 detected
+[OK] GitHub CLI da dang nhap: LuuCongQuangVu
+
+── Cau hinh ──
+
+  BUILDERX_API_PATH [/path/to/builderx_api]: ↵
+  BUILDERX_SPA_PATH [/path/to/builderx_spa]: ↵
+  MEMORY_REPO_OWNER [LuuCongQuangVu]: ↵
+  MEMORY_REPO_NAME [shared-knowledge-memory]: ↵
+
+── Chon IDE/Tool de cau hinh ──
+
+  1) Claude Desktop
+  2) Claude Code (CLI)
+  3) Cursor
+  ...
+  7) Tat ca
+
+  Tao repo memory tren GitHub ngay bay gio? (Y/n): Y
+[OK] Repo memory da tao: github.com/LuuCongQuangVu/shared-knowledge-memory (private)
+
+═══════════════════════════════════════════════════
+  Cai dat thanh cong!
+═══════════════════════════════════════════════════
+```
+
+### Cách 2: Cài thủ công
+
+```bash
+# Clone
+git clone https://github.com/vuluu2k/shared_knowledge_mcp.git
+cd shared_knowledge_mcp
+
+# Build
+npm install
+npm run build
+
+# Test
+npm start
+```
+
+Sau đó thêm vào `.claude/settings.json`:
 
 ```json
 {
@@ -65,7 +129,25 @@ Thêm vào `.claude/settings.json`:
 }
 ```
 
-Chạy xong, MCP server sẽ tự hoạt động. Claude Code sẽ thấy 13 tools có sẵn.
+### Cập nhật
+
+```bash
+# Tự động
+~/.shared-knowledge-mcp/update.sh
+
+# Hoặc chỉ định thư mục
+./update.sh /path/to/shared-knowledge-mcp
+```
+
+Script sẽ pull code mới, cài lại dependencies, build lại TypeScript, và xác nhận hoạt động.
+
+### Gỡ cài đặt
+
+```bash
+./install.sh --uninstall
+```
+
+Xóa thư mục cài đặt + xóa cấu hình khỏi tất cả IDE.
 
 ---
 
