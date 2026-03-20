@@ -14,6 +14,7 @@ import { saveMemory, recallMemory, listMemories, deleteMemory } from "./tools/me
 import { searchCode, readSource } from "./tools/codebase.js";
 import { smartContext } from "./tools/smart-context.js";
 import { analyzeImpact } from "./tools/analyze-impact.js";
+import { suggestPlan } from "./tools/suggest-plan.js";
 import type { RepoConfig } from "./types.js";
 
 // ── Repo paths (configurable via env vars) ──
@@ -597,6 +598,37 @@ server.tool(
   async (args) => {
     try {
       const result = await analyzeImpact(config, args);
+      return {
+        content: [{ type: "text" as const, text: result }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          { type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ── Tool 14: suggest_plan ──
+server.tool(
+  "suggest_plan",
+  "Gợi ý plan thực hiện task dựa trên memory (business rules) + phân tích code hiện tại + đánh giá ảnh hưởng. Tự tra cứu memory, tìm code liên quan, sinh plan theo đúng conventions BuilderX.",
+  {
+    task: z
+      .string()
+      .describe("Mô tả task cần làm, vd: 'Thêm tính năng giảm giá cho order', 'Fix bug customer không tạo được'"),
+    depth: z
+      .enum(["brief", "detailed"])
+      .optional()
+      .default("brief")
+      .describe("'brief' = plan gọn, 'detailed' = bao gồm code locations + full field lists"),
+  },
+  async (args) => {
+    try {
+      const result = await suggestPlan(config, args);
       return {
         content: [{ type: "text" as const, text: result }],
       };

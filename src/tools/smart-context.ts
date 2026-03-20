@@ -5,14 +5,19 @@ import {
   cachedPhoenixContexts,
   cachedVueApiModules,
   cachedVueStores,
-  filterRoutes,
-  filterActions,
-  findSchema,
-  filterContextFunctions,
   buildContractMap,
   findMismatches,
 } from "../cache/cached-parsers.js";
 import { recallMemory } from "./memory.js";
+import {
+  compressSchemas,
+  compressRoutes,
+  compressControllers,
+  compressFrontend,
+  compressStores,
+  compressContexts,
+  extractTaskWords,
+} from "./compress.js";
 import type { RepoConfig } from "../types.js";
 
 export interface SmartContextArgs {
@@ -146,151 +151,56 @@ export async function smartContext(config: RepoConfig, args: SmartContextArgs) {
   const kwFilter = (text: string) =>
     keywords.length === 0 || keywords.some((kw) => text.toLowerCase().includes(kw));
 
-  // ── Backend routes ──
+  // ── Relevance-scored compressed output ──
+  const taskWords = extractTaskWords(args.question);
+
   if (intents.some((i) => ["api_endpoint", "domain_overview", "contract_check"].includes(i))) {
     const filtered = routes.filter(
       (r) => kwFilter(r.path) || kwFilter(r.controller) || kwFilter(r.action)
     );
-    const limited = filtered.slice(0, detailed ? 30 : 15);
-
-    if (limited.length > 0) {
-      sections.push(`### Backend Routes (${filtered.length} matched)`);
-      for (const r of limited) {
-        const pipes = r.pipelines.length > 0 ? ` [${r.pipelines.join(",")}]` : "";
-        sections.push(`${r.method.padEnd(6)} ${r.path} → ${r.controller}.${r.action}${pipes}`);
-      }
-      if (filtered.length > limited.length) {
-        sections.push(`_...and ${filtered.length - limited.length} more_`);
-      }
-      sections.push("");
-    }
+    const block = compressRoutes(filtered, keywords);
+    if (block) sections.push(block + "\n");
   }
 
-  // ── Controller actions ──
   if (intents.some((i) => ["api_endpoint", "domain_overview"].includes(i))) {
     const filtered = controllers.filter(
       (a) => kwFilter(a.controller) || kwFilter(a.action)
     );
-    const limited = filtered.slice(0, detailed ? 20 : 10);
-
-    if (limited.length > 0) {
-      sections.push(`### Controller Actions (${filtered.length} matched)`);
-      for (const a of limited) {
-        const params = a.params
-          .filter((p) => p.source !== "conn_assigns")
-          .map((p) => `${p.name}${p.required ? "*" : ""}`)
-          .join(", ");
-        sections.push(`${a.controller}.${a.action}(${params}) → ${a.responseType}`);
-        if (detailed && a.plugs.length > 0) {
-          sections.push(`  plugs: ${a.plugs.map((p) => p.name.split(".").pop()).join(", ")}`);
-        }
-      }
-      sections.push("");
-    }
+    const block = compressControllers(filtered, keywords);
+    if (block) sections.push(block + "\n");
   }
 
-  // ── Schemas ──
   if (intents.some((i) => ["schema_info", "domain_overview"].includes(i)) && schemas.length > 0) {
     const filtered = schemas.filter(
       (s) => kwFilter(s.module) || kwFilter(s.tableName)
     );
-
-    if (filtered.length > 0) {
-      sections.push(`### Schemas (${filtered.length} matched)`);
-      for (const s of filtered.slice(0, detailed ? 10 : 5)) {
-        const fieldStr = s.fields
-          .filter((f) => !s.privateFields.includes(f.name))
-          .map((f) => `${f.name}:${f.type.replace(/^:/, "")}`)
-          .join(", ");
-        sections.push(`**${s.tableName}** (${s.module})`);
-        sections.push(`  fields: ${detailed ? fieldStr : fieldStr.slice(0, 150) + (fieldStr.length > 150 ? "..." : "")}`);
-        if (s.associations.length > 0) {
-          sections.push(`  assoc: ${s.associations.map((a) => `${a.type} ${a.name}`).join(", ")}`);
-        }
-      }
-      sections.push("");
-    }
+    const block = compressSchemas(filtered, keywords, taskWords);
+    if (block) sections.push(block + "\n");
   }
 
-  // ── Context functions ──
   if (intents.some((i) => ["domain_overview", "schema_info"].includes(i)) && contexts.length > 0) {
     const filtered = contexts.filter(
       (c) => kwFilter(c.module) || kwFilter(c.name)
     );
-    const limited = filtered.slice(0, detailed ? 20 : 10);
-
-    if (limited.length > 0) {
-      // Group by module
-      const byModule = new Map<string, typeof limited>();
-      for (const f of limited) {
-        const mod = f.module;
-        if (!byModule.has(mod)) byModule.set(mod, []);
-        byModule.get(mod)!.push(f);
-      }
-
-      sections.push(`### Context Functions (${filtered.length} matched)`);
-      for (const [mod, fns] of byModule) {
-        const fnList = fns
-          .map((f) => `${f.name}/${f.arity}${f.hasSiteId ? "*" : ""}`)
-          .join(", ");
-        sections.push(`**${mod}** [${fns[0].repo}]: ${fnList}`);
-      }
-      sections.push(`_* = requires site_id_`);
-      sections.push("");
-    }
+    const block = compressContexts(filtered, keywords);
+    if (block) sections.push(block + "\n");
   }
 
-  // ── Frontend API usage ──
   if (intents.some((i) => ["frontend_usage", "domain_overview", "contract_check"].includes(i)) && feUsages.length > 0) {
     const filtered = feUsages.filter(
       (u) => kwFilter(u.module) || kwFilter(u.urlPattern) || kwFilter(u.functionName)
     );
-    const limited = filtered.slice(0, detailed ? 20 : 10);
-
-    if (limited.length > 0) {
-      // Group by module
-      const byModule = new Map<string, typeof limited>();
-      for (const u of limited) {
-        if (!byModule.has(u.module)) byModule.set(u.module, []);
-        byModule.get(u.module)!.push(u);
-      }
-
-      sections.push(`### Frontend API Usage (${filtered.length} matched)`);
-      for (const [mod, usages] of byModule) {
-        const calls = usages
-          .map((u) => `${u.httpMethod} ${u.urlPattern}`)
-          .join(" | ");
-        sections.push(`**${mod}**: ${calls}`);
-      }
-      sections.push("");
-    }
+    const block = compressFrontend(filtered, keywords);
+    if (block) sections.push(block + "\n");
   }
 
-  // ── Stores ──
   if (intents.some((i) => ["frontend_usage", "domain_overview"].includes(i)) && stores.length > 0) {
     const filtered = stores.filter(
       (s) => kwFilter(s.store) || kwFilter(s.action) || s.apiCalls.some((c) => kwFilter(c.apiModule))
     );
-    const limited = filtered.slice(0, detailed ? 15 : 8);
-
-    if (limited.length > 0) {
-      const byStore = new Map<string, typeof limited>();
-      for (const s of limited) {
-        if (!byStore.has(s.store)) byStore.set(s.store, []);
-        byStore.get(s.store)!.push(s);
-      }
-
-      sections.push(`### Pinia Stores (${filtered.length} matched)`);
-      for (const [store, actions] of byStore) {
-        const actionList = actions
-          .map((a) => {
-            const apis = a.apiCalls.map((c) => `${c.apiModule}.${c.method}`).join(", ");
-            return `${a.action}()${apis ? ` → ${apis}` : ""}`;
-          })
-          .join(" | ");
-        sections.push(`**${store}**: ${actionList}`);
-      }
-      sections.push("");
+    if (filtered.length > 0) {
+      const block = compressStores(filtered, keywords);
+      if (block) sections.push(block + "\n");
     }
   }
 
