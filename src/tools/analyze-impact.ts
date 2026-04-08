@@ -1,13 +1,4 @@
-import {
-  cachedPhoenixRoutes,
-  cachedPhoenixControllers,
-  cachedPhoenixSchemas,
-  cachedPhoenixContexts,
-  cachedVueApiModules,
-  cachedVueStores,
-} from "../cache/cached-parsers.js";
-import { cachedParse } from "../cache/file-hash-cache.js";
-import { parseVueComponentImports } from "../parsers/vue-component-imports.js";
+import { loadScopedData, formatScopedStats } from "../cache/selective-loader.js";
 import {
   buildEntityMap,
   findAffectedEntities,
@@ -30,30 +21,20 @@ export async function analyzeImpact(config: RepoConfig, args: AnalyzeImpactArgs)
   const repo = detectRepo(args.target, args.repo);
   const sections: string[] = [];
 
-  // Load all data in parallel
-  const [routes, controllers, schemas, contexts, feUsages, stores, components] =
-    await Promise.all([
-      cachedPhoenixRoutes(config.backendPath),
-      cachedPhoenixControllers(config.backendPath),
-      cachedPhoenixSchemas(config.backendPath),
-      cachedPhoenixContexts(config.backendPath),
-      cachedVueApiModules(config.frontendPath),
-      cachedVueStores(config.frontendPath),
-      (async () => {
-        const { data } = await cachedParse(
-          "src/{views,components}/**/*.vue",
-          config.frontendPath,
-          () => parseVueComponentImports(config.frontendPath)
-        );
-        return data;
-      })(),
-    ]);
+  // Selective load — only data relevant to the target
+  const scoped = await loadScopedData(config, {
+    keywords: [],
+    target: args.target,
+  });
 
+  const { routes, controllers, schemas, contexts, feUsages, stores, components } = scoped;
   const target = args.target;
-  sections.push(`## Impact Analysis: ${target}`);
-  sections.push(`_Repo: ${repo} | Direction: ${direction} | Depth: ${maxDepth}_\n`);
 
-  // Build entity map for cross-project linking
+  sections.push(`## Impact Analysis: ${target}`);
+  sections.push(`_Repo: ${repo} | Direction: ${direction} | Depth: ${maxDepth}_`);
+  sections.push(`_${formatScopedStats(scoped.stats)}_\n`);
+
+  // Build entity map from scoped data
   const entities = buildEntityMap(
     routes, controllers, schemas, contexts, feUsages, stores, components
   );
@@ -63,7 +44,6 @@ export async function analyzeImpact(config: RepoConfig, args: AnalyzeImpactArgs)
     // ── Backend target ──
     const targetLower = target.toLowerCase();
 
-    // Find matching schema
     const matchedSchema = schemas.find(
       (s) =>
         s.filePath.includes(target) ||
@@ -71,7 +51,6 @@ export async function analyzeImpact(config: RepoConfig, args: AnalyzeImpactArgs)
         s.tableName === targetLower
     );
 
-    // Find matching context functions
     const matchedContexts = contexts.filter(
       (c) =>
         c.filePath.includes(target) ||
@@ -79,7 +58,6 @@ export async function analyzeImpact(config: RepoConfig, args: AnalyzeImpactArgs)
         c.name.toLowerCase().includes(targetLower)
     );
 
-    // Find matching controllers
     const matchedControllers = controllers.filter(
       (a) =>
         a.filePath.includes(target) ||
@@ -87,7 +65,6 @@ export async function analyzeImpact(config: RepoConfig, args: AnalyzeImpactArgs)
         a.action.toLowerCase() === targetLower
     );
 
-    // Find matching routes
     const matchedRoutes = routes.filter(
       (r) =>
         r.controller.toLowerCase().includes(targetLower.replace("controller", "").replace(".ex", "")) ||
@@ -95,16 +72,14 @@ export async function analyzeImpact(config: RepoConfig, args: AnalyzeImpactArgs)
         r.path.includes(targetLower)
     );
 
-    // Cross-repo via entity linker (accurate URL matching)
+    // Cross-repo via entity linker
     const matchedFeUsages = affectedEntities.flatMap((e) => e.frontend.apiCalls);
     const matchedStores = affectedEntities.flatMap((e) => e.frontend.stores);
     const matchedComponents = affectedEntities.flatMap((e) => e.frontend.components);
-    // Deduplicate
     const uniqueFeUsages = [...new Map(matchedFeUsages.map((u) => [`${u.module}:${u.functionName}`, u])).values()];
     const uniqueStores = [...new Map(matchedStores.map((s) => [`${s.store}:${s.action}`, s])).values()];
     const uniqueComponents = [...new Map(matchedComponents.map((c) => [c.filePath, c])).values()];
 
-    // ── Section 1: What is affected ──
     sections.push("### What is affected");
 
     if (direction === "both" || direction === "dependencies") {
@@ -156,7 +131,6 @@ export async function analyzeImpact(config: RepoConfig, args: AnalyzeImpactArgs)
         }
       }
 
-      // Cross-project impact via entity linker
       if (uniqueFeUsages.length > 0) {
         const byModule = groupBy(uniqueFeUsages, (u) => u.module);
         sections.push(`- Frontend API layer: ${uniqueFeUsages.length} usages (via entity linker)`);
@@ -183,7 +157,7 @@ export async function analyzeImpact(config: RepoConfig, args: AnalyzeImpactArgs)
       sections.push("");
     }
 
-    // ── Cross-Project Chains ──
+    // Cross-Project Chains
     if (affectedEntities.length > 0) {
       sections.push("### Cross-Project Chains");
       for (const entity of affectedEntities.slice(0, 3)) {
@@ -195,7 +169,6 @@ export async function analyzeImpact(config: RepoConfig, args: AnalyzeImpactArgs)
       sections.push("");
     }
 
-    // ── Section 2: Why ──
     sections.push("### Why");
     const whyParts: string[] = [];
     if (matchedSchema) whyParts.push(`Schema "${matchedSchema.tableName}" is the data source`);
@@ -209,7 +182,6 @@ export async function analyzeImpact(config: RepoConfig, args: AnalyzeImpactArgs)
     );
     sections.push("");
 
-    // ── Section 3: Risk Level ──
     const totalFrontendImpact = uniqueFeUsages.length + uniqueStores.length + uniqueComponents.length;
     const riskLevel = totalFrontendImpact === 0 ? "LOW" : totalFrontendImpact < 5 ? "MEDIUM" : "HIGH";
 
@@ -221,14 +193,12 @@ export async function analyzeImpact(config: RepoConfig, args: AnalyzeImpactArgs)
     } else {
       sections.push(`${totalFrontendImpact} frontend artifact(s) affected. High blast radius.`);
     }
-    // Show link confidence
     const lowConfLinks = affectedEntities.flatMap((e) => e.links.filter((l) => l.confidence < 0.8));
     if (lowConfLinks.length > 0) {
-      sections.push(`⚠ ${lowConfLinks.length} link(s) are fuzzy-matched — verify these connections manually.`);
+      sections.push(`⚠ ${lowConfLinks.length} link(s) are fuzzy-matched — verify manually.`);
     }
     sections.push("");
 
-    // ── Section 4: Suggested Approach ──
     sections.push("### Suggested Approach");
     if (riskLevel === "LOW") {
       sections.push("1. Make the change directly");
@@ -269,14 +239,13 @@ export async function analyzeImpact(config: RepoConfig, args: AnalyzeImpactArgs)
         c.component.toLowerCase().includes(targetLower.replace(/\.vue$/, ""))
     );
 
-    // Cross-project: use entity linker to find backend routes
+    // Cross-project: backend data from entity linker
     const beRoutes = affectedEntities.flatMap((e) => e.backend.routes);
     const beControllers = affectedEntities.flatMap((e) => e.backend.controllers);
     const beSchemas = affectedEntities.flatMap((e) => e.backend.schemas);
     const uniqueBeRoutes = [...new Map(beRoutes.map((r) => [`${r.method}:${r.path}`, r])).values()];
     const uniqueBeControllers = [...new Map(beControllers.map((c) => [`${c.controller}:${c.action}`, c])).values()];
 
-    // ── Section 1: What is affected ──
     sections.push("### What is affected");
 
     if (direction === "both" || direction === "dependencies") {
@@ -298,7 +267,6 @@ export async function analyzeImpact(config: RepoConfig, args: AnalyzeImpactArgs)
         }
       }
 
-      // Backend routes via entity linker (replaces pathOverlap)
       if (uniqueBeRoutes.length > 0) {
         sections.push(`- Backend routes hit (via entity linker):`);
         for (const r of uniqueBeRoutes.slice(0, 10)) {
@@ -309,7 +277,6 @@ export async function analyzeImpact(config: RepoConfig, args: AnalyzeImpactArgs)
         }
       }
 
-      // Backend schemas connected to this frontend code
       if (beSchemas.length > 0) {
         sections.push(`- Backend schemas:`);
         for (const s of beSchemas.slice(0, 5)) {
@@ -343,7 +310,6 @@ export async function analyzeImpact(config: RepoConfig, args: AnalyzeImpactArgs)
       sections.push("");
     }
 
-    // ── Cross-Project Chains ──
     if (affectedEntities.length > 0) {
       sections.push("### Cross-Project Chains");
       for (const entity of affectedEntities.slice(0, 3)) {
@@ -355,7 +321,6 @@ export async function analyzeImpact(config: RepoConfig, args: AnalyzeImpactArgs)
       sections.push("");
     }
 
-    // ── Section 2: Why ──
     sections.push("### Why");
     const feWhyParts: string[] = [];
     if (matchedFeUsages.length > 0) feWhyParts.push(`${matchedFeUsages.length} API call(s) may break if endpoint changes`);
@@ -368,7 +333,6 @@ export async function analyzeImpact(config: RepoConfig, args: AnalyzeImpactArgs)
     );
     sections.push("");
 
-    // ── Section 3: Risk Level ──
     const feTotalImpact = matchedFeUsages.length + matchedStores.length + matchedComponents.length;
     const crossProjectImpact = uniqueBeRoutes.length + beSchemas.length;
     const feRiskLevel = feTotalImpact === 0 && crossProjectImpact === 0
@@ -381,7 +345,6 @@ export async function analyzeImpact(config: RepoConfig, args: AnalyzeImpactArgs)
     sections.push(`${feTotalImpact} frontend artifact(s) + ${crossProjectImpact} backend artifact(s) in dependency chain.`);
     sections.push("");
 
-    // ── Section 4: Suggested Approach ──
     sections.push("### Suggested Approach");
     if (feRiskLevel === "LOW") {
       sections.push("1. Make the change directly");
@@ -410,7 +373,6 @@ function detectRepo(target: string, hint?: string): RepoType {
     return "backend";
   if (target.endsWith(".vue") || target.endsWith(".js") || target.endsWith(".ts") || target.includes("builderx_spa"))
     return "frontend";
-  // Default: backend
   return "backend";
 }
 

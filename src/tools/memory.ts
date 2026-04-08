@@ -1,6 +1,20 @@
 import { execSync } from "child_process";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from "fs";
 import { join } from "path";
+import {
+  loadFromDisk,
+  needsSync,
+  markSynced,
+  markDirty,
+  clearDirty,
+  isLoaded,
+  searchMemories,
+  listAllMemories,
+  getMemory,
+  upsertEntry,
+  removeEntry,
+  type MemoryCacheEntry,
+} from "../cache/memory-cache.js";
 
 const CATEGORIES = ["business", "tasks", "analysis", "decisions"] as const;
 type Category = (typeof CATEGORIES)[number];
@@ -74,18 +88,30 @@ function resolveOwner(cfg: MemoryConfig): string {
   }
 }
 
+/**
+ * Ensure local repo exists. Only sync with remote when cache says it's time.
+ * This is the key optimization: replaces the old ensureRepo() that pulled every time.
+ */
 function ensureRepo(): string {
   const cfg = getConfig();
   const owner = resolveOwner(cfg);
   cfg.repoOwner = owner;
   const repoPath = cfg.localPath;
 
-  // Already cloned — pull latest
+  // Already cloned — conditional sync
   if (existsSync(join(repoPath, ".git"))) {
-    try {
-      git("pull --rebase --quiet", repoPath);
-    } catch {
-      // offline or conflict, continue with local
+    if (needsSync()) {
+      try {
+        git("pull --rebase --quiet", repoPath);
+      } catch {
+        // offline or conflict, continue with local
+      }
+      markSynced();
+      // Reload cache from disk after pull (files may have changed)
+      loadFromDisk(repoPath);
+    } else if (!isLoaded()) {
+      // First access this session — load from disk (no git pull)
+      loadFromDisk(repoPath);
     }
     return repoPath;
   }
@@ -97,6 +123,8 @@ function ensureRepo(): string {
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
     });
+    markSynced();
+    loadFromDisk(repoPath);
     return repoPath;
   } catch {
     // Repo doesn't exist on GitHub yet — create it
@@ -150,6 +178,8 @@ function ensureRepo(): string {
     }
   }
 
+  markSynced();
+  loadFromDisk(repoPath);
   return repoPath;
 }
 
@@ -166,10 +196,13 @@ function commitAndPush(repoPath: string, message: string): void {
 
   git(`commit -m "${message.replace(/"/g, '\\"')}"`, repoPath);
 
+  // Async push — don't block the response
   try {
     git("push --quiet", repoPath);
+    clearDirty();
   } catch {
-    // offline — will push next time
+    // offline — will push next time via sync
+    markDirty();
   }
 }
 
@@ -198,34 +231,6 @@ function serializeEntry(entry: MemoryEntry): string {
   ].join("\n");
 }
 
-function parseEntry(raw: string, id: string, category: Category): MemoryEntry {
-  const frontmatterMatch = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
-  if (!frontmatterMatch) {
-    return { id, category, title: id, content: raw, tags: [], created_at: "", updated_at: "" };
-  }
-
-  const [, meta, content] = frontmatterMatch;
-  const titleMatch = meta.match(/title:\s*"([^"]+)"/);
-  const tagsMatch = meta.match(/tags:\s*\[([^\]]*)\]/);
-  const createdMatch = meta.match(/created_at:\s*(.+)/);
-  const updatedMatch = meta.match(/updated_at:\s*(.+)/);
-
-  return {
-    id,
-    category,
-    title: titleMatch?.[1] || id,
-    content: content.trim(),
-    tags: tagsMatch?.[1]
-      ? tagsMatch[1]
-          .split(",")
-          .map((t) => t.trim().replace(/"/g, ""))
-          .filter(Boolean)
-      : [],
-    created_at: createdMatch?.[1]?.trim() || "",
-    updated_at: updatedMatch?.[1]?.trim() || "",
-  };
-}
-
 // ── Tool 1: save_memory ──
 
 export interface SaveMemoryArgs {
@@ -244,10 +249,14 @@ export async function saveMemory(args: SaveMemoryArgs) {
   const filePath = join(repoPath, "memories", category, `${id}.md`);
 
   let created_at = now;
-  if (existsSync(filePath)) {
-    const existing = readFileSync(filePath, "utf-8");
-    const parsed = parseEntry(existing, id, category);
-    created_at = parsed.created_at || now;
+  // Check cache first, then disk
+  const cached = getMemory(category, id);
+  if (cached) {
+    created_at = cached.created_at || now;
+  } else if (existsSync(filePath)) {
+    const raw = readFileSync(filePath, "utf-8");
+    const frontmatterMatch = raw.match(/created_at:\s*(.+)/);
+    created_at = frontmatterMatch?.[1]?.trim() || now;
   }
 
   const entry: MemoryEntry = {
@@ -262,6 +271,19 @@ export async function saveMemory(args: SaveMemoryArgs) {
 
   mkdirSync(join(repoPath, "memories", category), { recursive: true });
   writeFileSync(filePath, serializeEntry(entry));
+
+  // Update cache immediately (no need to re-read from disk)
+  upsertEntry({
+    id,
+    category,
+    title: args.title,
+    tags: args.tags || [],
+    snippet: args.content.slice(0, 200),
+    fullContent: args.content,
+    created_at,
+    updated_at: now,
+    _mtime: Date.now(),
+  });
 
   const isNew = created_at === now && !args.id;
   commitAndPush(repoPath, `${isNew ? "add" : "update"}: [${category}] ${args.title}`);
@@ -283,55 +305,35 @@ export interface RecallMemoryArgs {
   category?: string;
   tag?: string;
   limit?: number;
+  /** "compact" = snippet only (default), "full" = load full content */
+  mode?: "compact" | "full";
 }
 
 export async function recallMemory(args: RecallMemoryArgs) {
   const repoPath = ensureRepo();
   const limit = args.limit || 10;
-  const entries: MemoryEntry[] = [];
+  const mode = args.mode || "compact";
 
-  const cats = args.category ? [validateCategory(args.category)] : [...CATEGORIES];
-
-  for (const cat of cats) {
-    const catDir = join(repoPath, "memories", cat);
-    if (!existsSync(catDir)) continue;
-
-    for (const file of readdirSync(catDir).filter((f) => f.endsWith(".md"))) {
-      const raw = readFileSync(join(catDir, file), "utf-8");
-      entries.push(parseEntry(raw, file.replace(/\.md$/, ""), cat));
-    }
-  }
-
-  let results = entries;
-
-  if (args.query) {
-    const q = args.query.toLowerCase();
-    results = results.filter(
-      (e) =>
-        e.title.toLowerCase().includes(q) ||
-        e.content.toLowerCase().includes(q) ||
-        e.tags.some((t) => t.toLowerCase().includes(q))
-    );
-  }
-
-  if (args.tag) {
-    const tag = args.tag.toLowerCase();
-    results = results.filter((e) => e.tags.some((t) => t.toLowerCase() === tag));
-  }
-
-  results.sort((a, b) => (b.updated_at || "").localeCompare(a.updated_at || ""));
-  results = results.slice(0, limit);
+  const results = searchMemories({
+    query: args.query,
+    category: args.category,
+    tag: args.tag,
+    limit,
+    mode,
+    repoPath,
+  });
 
   return {
     total: results.length,
     query: args.query || null,
     filters: { category: args.category || "all", tag: args.tag || null },
+    mode,
     results: results.map((e) => ({
       id: e.id,
       category: e.category,
       title: e.title,
       tags: e.tags,
-      content: e.content,
+      content: mode === "full" ? (e.fullContent || e.snippet) : e.snippet,
       created_at: e.created_at,
       updated_at: e.updated_at,
     })),
@@ -345,37 +347,28 @@ export interface ListMemoriesArgs {
 }
 
 export async function listMemories(args: ListMemoriesArgs) {
-  const repoPath = ensureRepo();
+  ensureRepo();
 
-  const cats = args.category ? [validateCategory(args.category)] : [...CATEGORIES];
+  const { total, categories } = listAllMemories(args.category);
 
   const result: Record<
     string,
     { count: number; entries: { id: string; title: string; tags: string[]; updated_at: string }[] }
   > = {};
 
-  for (const cat of cats) {
-    const catDir = join(repoPath, "memories", cat);
-    if (!existsSync(catDir)) {
-      result[cat] = { count: 0, entries: [] };
-      continue;
-    }
-
-    const entries = readdirSync(catDir)
-      .filter((f) => f.endsWith(".md"))
-      .map((file) => {
-        const parsed = parseEntry(readFileSync(join(catDir, file), "utf-8"), file.replace(/\.md$/, ""), cat);
-        return { id: parsed.id, title: parsed.title, tags: parsed.tags, updated_at: parsed.updated_at };
-      });
-
-    entries.sort((a, b) => (b.updated_at || "").localeCompare(a.updated_at || ""));
-    result[cat] = { count: entries.length, entries };
+  for (const [cat, data] of Object.entries(categories)) {
+    result[cat] = {
+      count: data.count,
+      entries: data.entries.map((e) => ({
+        id: e.id,
+        title: e.title,
+        tags: e.tags,
+        updated_at: e.updated_at,
+      })),
+    };
   }
 
-  return {
-    total: Object.values(result).reduce((s, c) => s + c.count, 0),
-    categories: result,
-  };
+  return { total, categories: result };
 }
 
 // ── Tool 4: delete_memory ──
@@ -394,15 +387,25 @@ export async function deleteMemory(args: DeleteMemoryArgs) {
     throw new Error(`Memory not found: ${category}/${args.id}`);
   }
 
-  const raw = readFileSync(filePath, "utf-8");
-  const entry = parseEntry(raw, args.id, category);
+  // Get title from cache or file
+  const cached = getMemory(category, args.id);
+  let title = cached?.title || args.id;
+  if (!cached) {
+    const raw = readFileSync(filePath, "utf-8");
+    const titleMatch = raw.match(/title:\s*"([^"]+)"/);
+    title = titleMatch?.[1] || args.id;
+  }
 
   execSync(`rm "${filePath}"`, { encoding: "utf-8" });
-  commitAndPush(repoPath, `delete: [${category}] ${entry.title}`);
+
+  // Remove from cache immediately
+  removeEntry(category, args.id);
+
+  commitAndPush(repoPath, `delete: [${category}] ${title}`);
 
   return {
     success: true,
-    deleted: { id: args.id, category, title: entry.title },
+    deleted: { id: args.id, category, title },
   };
 }
 

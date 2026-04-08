@@ -1,13 +1,4 @@
-import {
-  cachedPhoenixRoutes,
-  cachedPhoenixControllers,
-  cachedPhoenixSchemas,
-  cachedPhoenixContexts,
-  cachedVueApiModules,
-  cachedVueStores,
-} from "../cache/cached-parsers.js";
-import { cachedParse } from "../cache/file-hash-cache.js";
-import { parseVueComponentImports } from "../parsers/vue-component-imports.js";
+import { loadScopedData, formatScopedStats } from "../cache/selective-loader.js";
 import { recallMemory } from "./memory.js";
 import {
   compressSchemas,
@@ -15,7 +6,6 @@ import {
   compressControllers,
   compressFrontend,
   compressStores,
-  compressContexts,
   compressImpact,
   compressCrossProjectEntities,
   compressCrossProjectGaps,
@@ -73,36 +63,19 @@ export async function suggestPlan(config: RepoConfig, args: SuggestPlanArgs) {
   const detailed = args.depth === "detailed";
   const sections: string[] = [];
 
-  // Load everything in parallel
-  const [routes, controllers, schemas, contexts, feUsages, stores, components] =
-    await Promise.all([
-      cachedPhoenixRoutes(config.backendPath),
-      cachedPhoenixControllers(config.backendPath),
-      cachedPhoenixSchemas(config.backendPath),
-      cachedPhoenixContexts(config.backendPath),
-      cachedVueApiModules(config.frontendPath),
-      cachedVueStores(config.frontendPath),
-      (async () => {
-        const { data } = await cachedParse(
-          "src/{views,components}/**/*.vue",
-          config.frontendPath,
-          () => parseVueComponentImports(config.frontendPath)
-        );
-        return data;
-      })(),
-    ]);
+  // Selective load — only data relevant to task keywords
+  const scoped = await loadScopedData(config, { keywords });
+  const { routes, controllers, schemas, contexts, feUsages, stores, components } = scoped;
 
-  const kwFilter = (text: string) =>
-    keywords.length === 0 || keywords.some((kw) => text.toLowerCase().includes(kw));
-
-  // Build cross-project entity map
+  // Build cross-project entity map from scoped data
   const entities = buildEntityMap(
     routes, controllers, schemas, contexts, feUsages, stores, components,
     keywords.length > 0 ? keywords : undefined
   );
 
   sections.push(`## Plan gợi ý: "${args.task}"`);
-  sections.push(`_Action: ${action} | Keywords: ${keywords.join(", ") || "(general)"} | Entities: ${entities.length}_\n`);
+  sections.push(`_Action: ${action} | Keywords: ${keywords.join(", ") || "(general)"} | Entities: ${entities.length}_`);
+  sections.push(`_${formatScopedStats(scoped.stats)}_\n`);
 
   // ── 1. Business rules từ memory ──
   sections.push(`### 1. Business rules đã lưu (từ memory)`);
@@ -110,7 +83,7 @@ export async function suggestPlan(config: RepoConfig, args: SuggestPlanArgs) {
   const allMemories: { title: string; content: string; category: string; tags: string[] }[] = [];
   for (const kw of keywords.slice(0, 3)) {
     try {
-      const mem = await recallMemory({ query: kw, limit: 5 });
+      const mem = await recallMemory({ query: kw, limit: 5, mode: detailed ? "full" : "compact" });
       for (const r of mem.results) {
         if (!allMemories.some((m) => m.title === r.title)) {
           allMemories.push(r);
@@ -123,7 +96,7 @@ export async function suggestPlan(config: RepoConfig, args: SuggestPlanArgs) {
   try {
     const taskWords = args.task.split(/\s+/).filter((w) => w.length > 3).slice(0, 3);
     for (const word of taskWords) {
-      const mem = await recallMemory({ query: word, limit: 3 });
+      const mem = await recallMemory({ query: word, limit: 3, mode: "compact" });
       for (const r of mem.results) {
         if (!allMemories.some((m) => m.title === r.title)) {
           allMemories.push(r);
@@ -145,49 +118,24 @@ export async function suggestPlan(config: RepoConfig, args: SuggestPlanArgs) {
   }
   sections.push("");
 
-  // ── 2. Code hiện tại liên quan ──
+  // ── 2. Code hiện tại liên quan (pre-filtered by selective loader) ──
   sections.push(`### 2. Code hiện tại liên quan`);
 
-  // Backend routes
-  const relatedRoutes = routes.filter(
-    (r) => kwFilter(r.path) || kwFilter(r.controller) || kwFilter(r.action)
-  );
-  // Backend controllers
-  const relatedControllers = controllers.filter(
-    (a) => kwFilter(a.controller) || kwFilter(a.action)
-  );
-  // Schemas
-  const relatedSchemas = schemas.filter(
-    (s) => kwFilter(s.module) || kwFilter(s.tableName)
-  );
-  // Context functions
-  const relatedContexts = contexts.filter(
-    (c) => kwFilter(c.module) || kwFilter(c.name)
-  );
-  // Frontend
-  const relatedFeUsages = feUsages.filter(
-    (u) => kwFilter(u.module) || kwFilter(u.urlPattern) || kwFilter(u.functionName)
-  );
-  const relatedStores = stores.filter(
-    (s) => kwFilter(s.store) || kwFilter(s.action) || s.apiCalls.some((c) => kwFilter(c.apiModule))
-  );
-
-  // Relevance-scored compressed output
   const taskWords = extractTaskWords(args.task);
 
-  const schemaBlock = compressSchemas(relatedSchemas, keywords, taskWords);
+  const schemaBlock = compressSchemas(schemas, keywords, taskWords);
   if (schemaBlock) sections.push("\n" + schemaBlock);
 
-  const routeBlock = compressRoutes(relatedRoutes, keywords);
+  const routeBlock = compressRoutes(routes, keywords);
   if (routeBlock) sections.push("\n" + routeBlock);
 
-  const ctrlBlock = compressControllers(relatedControllers, keywords);
+  const ctrlBlock = compressControllers(controllers, keywords);
   if (ctrlBlock) sections.push("\n" + ctrlBlock);
 
-  const feBlock = compressFrontend(relatedFeUsages, keywords);
+  const feBlock = compressFrontend(feUsages, keywords);
   if (feBlock) sections.push("\n" + feBlock);
 
-  const storeBlock = compressStores(relatedStores, keywords);
+  const storeBlock = compressStores(stores, keywords);
   if (storeBlock) sections.push("\n" + storeBlock);
 
   // Cross-project entity view
@@ -205,17 +153,17 @@ export async function suggestPlan(config: RepoConfig, args: SuggestPlanArgs) {
   sections.push(`### 3. Đề xuất thực hiện`);
 
   if (action === "add_feature") {
-    sections.push(generateAddFeaturePlan(keywords, relatedSchemas, relatedRoutes, relatedControllers, relatedFeUsages, detailed));
+    sections.push(generateAddFeaturePlan(keywords, schemas, routes, controllers, feUsages, detailed));
   } else if (action === "modify") {
-    sections.push(generateModifyPlan(keywords, relatedSchemas, relatedRoutes, relatedControllers, relatedFeUsages, detailed));
+    sections.push(generateModifyPlan(keywords, schemas, routes, controllers, feUsages, detailed));
   } else if (action === "fix_bug") {
-    sections.push(generateFixBugPlan(keywords, relatedSchemas, relatedRoutes, relatedFeUsages, detailed));
+    sections.push(generateFixBugPlan(keywords, schemas, routes, feUsages, detailed));
   } else if (action === "remove") {
-    sections.push(generateRemovePlan(keywords, relatedRoutes, relatedControllers, relatedFeUsages, detailed));
+    sections.push(generateRemovePlan(keywords, routes, controllers, feUsages, detailed));
   } else if (action === "refactor") {
-    sections.push(generateRefactorPlan(keywords, relatedSchemas, relatedControllers, relatedContexts, detailed));
+    sections.push(generateRefactorPlan(keywords, schemas, controllers, contexts, detailed));
   } else if (action === "integrate") {
-    sections.push(generateIntegratePlan(keywords, relatedSchemas, relatedRoutes, detailed));
+    sections.push(generateIntegratePlan(keywords, schemas, routes, detailed));
   }
   sections.push("");
 
@@ -227,7 +175,7 @@ export async function suggestPlan(config: RepoConfig, args: SuggestPlanArgs) {
   const uniqueEntityComponents = [...new Map(entityComponents.map((c) => [c.filePath, c])).values()];
 
   // Fallback: also check via store names for components not in entities
-  const storeNames = [...new Set(relatedStores.map((s) => s.store.toLowerCase()))];
+  const storeNames = [...new Set(stores.map((s) => s.store.toLowerCase()))];
   const storeComponents = components.filter((c) =>
     c.storeImports.some((si) => storeNames.some((sn) => si.toLowerCase().includes(sn)))
   );
@@ -237,9 +185,9 @@ export async function suggestPlan(config: RepoConfig, args: SuggestPlanArgs) {
   ).values()];
 
   sections.push(compressImpact(
-    relatedRoutes.length,
-    relatedSchemas.length,
-    relatedFeUsages.length,
+    routes.length,
+    schemas.length,
+    feUsages.length,
     allAffectedComponents
   ));
 
@@ -254,7 +202,7 @@ export async function suggestPlan(config: RepoConfig, args: SuggestPlanArgs) {
   // ── 5. Checklist ──
   sections.push(`### 5. Checklist`);
   const entityGapCount = entities.reduce((s, e) => s + e.gaps.filter((g) => g.severity === "error").length, 0);
-  sections.push(generateChecklist(action, keywords, relatedSchemas, allMemories, entities.length, entityGapCount));
+  sections.push(generateChecklist(action, keywords, schemas, allMemories, entities.length, entityGapCount));
 
   return sections.join("\n");
 }
@@ -497,14 +445,3 @@ function generateChecklist(
   return items.join("\n");
 }
 
-// ── Helpers ──
-
-function groupBy<T>(items: T[], keyFn: (item: T) => string): Record<string, T[]> {
-  const result: Record<string, T[]> = {};
-  for (const item of items) {
-    const key = keyFn(item);
-    if (!result[key]) result[key] = [];
-    result[key].push(item);
-  }
-  return result;
-}

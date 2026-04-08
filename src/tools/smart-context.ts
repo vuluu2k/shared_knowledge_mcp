@@ -1,15 +1,8 @@
 import {
-  cachedPhoenixRoutes,
-  cachedPhoenixControllers,
-  cachedPhoenixSchemas,
-  cachedPhoenixContexts,
-  cachedVueApiModules,
-  cachedVueStores,
   buildContractMap,
   findMismatches,
 } from "../cache/cached-parsers.js";
-import { cachedParse } from "../cache/file-hash-cache.js";
-import { parseVueComponentImports } from "../parsers/vue-component-imports.js";
+import { loadScopedData, formatScopedStats } from "../cache/selective-loader.js";
 import { recallMemory } from "./memory.js";
 import {
   compressSchemas,
@@ -24,7 +17,6 @@ import {
 } from "./compress.js";
 import {
   buildEntityMap,
-  linkRoutesToFrontend,
 } from "./cross-project-linker.js";
 import type { RepoConfig } from "../types.js";
 
@@ -120,78 +112,41 @@ export async function smartContext(config: RepoConfig, args: SmartContextArgs) {
   sections.push(`## Smart Context: "${args.question}"`);
   sections.push(`_Intents: ${intents.join(", ")} | Keywords: ${keywords.join(", ")}_\n`);
 
-  // Run all parsers in parallel (including components for cross-project linking)
-  const [routes, controllers, schemas, contexts, feUsages, stores, components] = await Promise.all([
-    cachedPhoenixRoutes(config.backendPath),
-    cachedPhoenixControllers(config.backendPath),
-    intents.some((i) => ["schema_info", "domain_overview", "api_endpoint"].includes(i))
-      ? cachedPhoenixSchemas(config.backendPath)
-      : Promise.resolve([]),
-    intents.some((i) => ["domain_overview", "schema_info"].includes(i))
-      ? cachedPhoenixContexts(config.backendPath)
-      : Promise.resolve([]),
-    cachedVueApiModules(config.frontendPath),
-    intents.some((i) => ["frontend_usage", "domain_overview"].includes(i))
-      ? cachedVueStores(config.frontendPath)
-      : Promise.resolve([]),
-    intents.some((i) => ["frontend_usage", "domain_overview", "contract_check"].includes(i))
-      ? (async () => {
-          const { data } = await cachedParse(
-            "src/{views,components}/**/*.vue",
-            config.frontendPath,
-            () => parseVueComponentImports(config.frontendPath)
-          );
-          return data;
-        })()
-      : Promise.resolve([]),
-  ]);
+  // Selective load — only data relevant to keywords + intent
+  const scoped = await loadScopedData(config, {
+    keywords,
+    layers: {
+      schemas: intents.some((i) => ["schema_info", "domain_overview", "api_endpoint"].includes(i)),
+      contexts: intents.some((i) => ["domain_overview", "schema_info"].includes(i)),
+      stores: intents.some((i) => ["frontend_usage", "domain_overview"].includes(i)),
+      components: intents.some((i) => ["frontend_usage", "domain_overview", "contract_check"].includes(i)),
+    },
+  });
 
-  // Build cross-project entity map (core synthesis)
+  sections.push(`_${formatScopedStats(scoped.stats)}_\n`);
+
+  const { routes, controllers, schemas, contexts, feUsages, stores, components } = scoped;
+
+  // Build cross-project entity map from scoped (pre-filtered) data
   const entities = buildEntityMap(
     routes, controllers, schemas, contexts, feUsages, stores, components,
     keywords.length > 0 ? keywords : undefined
   );
 
-  // Also build direct route↔frontend links for the filtered scope
-  const linkResult = linkRoutesToFrontend(routes, controllers, feUsages);
-
-  // Filter by keywords (for per-layer detail sections)
-  const kwFilter = (text: string) =>
-    keywords.length === 0 || keywords.some((kw) => text.toLowerCase().includes(kw));
-
   const taskWords = extractTaskWords(args.question);
-
-  const filteredRoutes = routes.filter(
-    (r) => kwFilter(r.path) || kwFilter(r.controller) || kwFilter(r.action)
-  );
-  const filteredControllers = controllers.filter(
-    (a) => kwFilter(a.controller) || kwFilter(a.action)
-  );
-  const filteredSchemas = schemas.filter(
-    (s) => kwFilter(s.module) || kwFilter(s.tableName)
-  );
-  const filteredContexts = contexts.filter(
-    (c) => kwFilter(c.module) || kwFilter(c.name)
-  );
-  const filteredFeUsages = feUsages.filter(
-    (u) => kwFilter(u.module) || kwFilter(u.urlPattern) || kwFilter(u.functionName)
-  );
-  const filteredStores = stores.filter(
-    (s) => kwFilter(s.store) || kwFilter(s.action) || s.apiCalls.some((c) => kwFilter(c.apiModule))
-  );
 
   // ── Section 1: Purpose ──
   sections.push(`### Purpose`);
   if (keywords.length > 0) {
     const domainSummary: string[] = [];
-    if (filteredSchemas.length > 0) {
-      domainSummary.push(`${filteredSchemas.length} schema(s): ${filteredSchemas.map((s) => s.tableName).join(", ")}`);
+    if (schemas.length > 0) {
+      domainSummary.push(`${schemas.length} schema(s): ${schemas.map((s) => s.tableName).join(", ")}`);
     }
-    if (filteredRoutes.length > 0) {
-      domainSummary.push(`${filteredRoutes.length} API endpoint(s)`);
+    if (routes.length > 0) {
+      domainSummary.push(`${routes.length} API endpoint(s)`);
     }
-    if (filteredFeUsages.length > 0) {
-      domainSummary.push(`${filteredFeUsages.length} frontend call(s)`);
+    if (feUsages.length > 0) {
+      domainSummary.push(`${feUsages.length} frontend call(s)`);
     }
     if (entities.length > 0) {
       domainSummary.push(`${entities.length} cross-project entity(ies)`);
@@ -202,11 +157,10 @@ export async function smartContext(config: RepoConfig, args: SmartContextArgs) {
   }
   sections.push("");
 
-  // ── Section 2: Cross-Project Flow (NEW — entity-centric) ──
+  // ── Section 2: Cross-Project Flow (entity-centric) ──
   sections.push(`### Cross-Project Flow`);
   if (entities.length > 0) {
     for (const entity of entities.slice(0, 3)) {
-      // Build the full chain for this entity
       const chain: string[] = [];
 
       if (entity.backend.schemas.length > 0) {
@@ -223,8 +177,6 @@ export async function smartContext(config: RepoConfig, args: SmartContextArgs) {
       if (entity.backend.routes.length > 0) {
         chain.push(`Route(${entity.backend.routes.length})`);
       }
-
-      // Cross-project boundary
       if (entity.links.length > 0) {
         const modules = [...new Set(entity.links.flatMap((l) => l.frontendCalls.map((f) => f.module)))].slice(0, 3);
         chain.push(`API(${modules.join(",")})`);
@@ -245,19 +197,18 @@ export async function smartContext(config: RepoConfig, args: SmartContextArgs) {
     if (entities.length > 3) {
       sections.push(`+${entities.length - 3} more entities`);
     }
-  } else if (filteredRoutes.length > 0 || filteredFeUsages.length > 0) {
-    // Fallback: old-style flow
+  } else if (routes.length > 0 || feUsages.length > 0) {
     const flowParts: string[] = [];
-    if (filteredFeUsages.length > 0) {
-      const modules = [...new Set(filteredFeUsages.map((u) => u.module))].slice(0, 3);
+    if (feUsages.length > 0) {
+      const modules = [...new Set(feUsages.map((u) => u.module))].slice(0, 3);
       flowParts.push(`Frontend(${modules.join(",")})`);
     }
-    if (filteredRoutes.length > 0) {
-      const routeSample = filteredRoutes.slice(0, 2).map((r) => `${r.method} ${r.path}`).join(", ");
+    if (routes.length > 0) {
+      const routeSample = routes.slice(0, 2).map((r) => `${r.method} ${r.path}`).join(", ");
       flowParts.push(`Routes(${routeSample})`);
     }
-    if (filteredControllers.length > 0) {
-      const ctrls = [...new Set(filteredControllers.map((c) => c.controller))].slice(0, 3);
+    if (controllers.length > 0) {
+      const ctrls = [...new Set(controllers.map((c) => c.controller))].slice(0, 3);
       flowParts.push(`Controllers(${ctrls.join(",")})`);
     }
     sections.push(flowParts.join(" → "));
@@ -266,12 +217,11 @@ export async function smartContext(config: RepoConfig, args: SmartContextArgs) {
   }
   sections.push("");
 
-  // ── Section 3: Cross-Project Links (NEW) ──
+  // ── Section 3: Cross-Project Links ──
   if (entities.length > 0) {
     const entityBlock = compressCrossProjectEntities(entities, keywords, detailed ? 8 : 3);
     if (entityBlock) sections.push(entityBlock + "\n");
 
-    // Show gaps
     const gapBlock = compressCrossProjectGaps(entities);
     if (gapBlock) sections.push(gapBlock + "\n");
   }
@@ -283,12 +233,12 @@ export async function smartContext(config: RepoConfig, args: SmartContextArgs) {
   if (intents.includes("memory_recall") || intents.includes("domain_overview")) {
     for (const kw of keywords.slice(0, 2)) {
       try {
-        const mem = await recallMemory({ query: kw, limit: 3 });
+        const mem = await recallMemory({ query: kw, limit: 3, mode: detailed ? "full" : "compact" });
         if (mem.total > 0) {
           sections.push(`**Memory** (${mem.total} for "${kw}"):`);
           for (const r of mem.results) {
             sections.push(`- **${r.title}** [${r.category}] ${r.tags.join(", ")}`);
-            if (detailed) sections.push(`  ${r.content.slice(0, 200)}`);
+            if (detailed) sections.push(`  ${r.content}`);
           }
           sections.push("");
         }
@@ -297,40 +247,39 @@ export async function smartContext(config: RepoConfig, args: SmartContextArgs) {
   }
 
   if (intents.some((i) => ["api_endpoint", "domain_overview", "contract_check"].includes(i))) {
-    const block = compressRoutes(filteredRoutes, keywords);
+    const block = compressRoutes(routes, keywords);
     if (block) sections.push(block + "\n");
   }
 
   if (intents.some((i) => ["api_endpoint", "domain_overview"].includes(i))) {
-    const block = compressControllers(filteredControllers, keywords);
+    const block = compressControllers(controllers, keywords);
     if (block) sections.push(block + "\n");
   }
 
-  if (intents.some((i) => ["schema_info", "domain_overview"].includes(i)) && filteredSchemas.length > 0) {
-    const block = compressSchemas(filteredSchemas, keywords, taskWords);
+  if (intents.some((i) => ["schema_info", "domain_overview"].includes(i)) && schemas.length > 0) {
+    const block = compressSchemas(schemas, keywords, taskWords);
     if (block) sections.push(block + "\n");
   }
 
-  if (intents.some((i) => ["domain_overview", "schema_info"].includes(i)) && filteredContexts.length > 0) {
-    const block = compressContexts(filteredContexts, keywords);
+  if (intents.some((i) => ["domain_overview", "schema_info"].includes(i)) && contexts.length > 0) {
+    const block = compressContexts(contexts, keywords);
     if (block) sections.push(block + "\n");
   }
 
-  if (intents.some((i) => ["frontend_usage", "domain_overview", "contract_check"].includes(i)) && filteredFeUsages.length > 0) {
-    const block = compressFrontend(filteredFeUsages, keywords);
+  if (intents.some((i) => ["frontend_usage", "domain_overview", "contract_check"].includes(i)) && feUsages.length > 0) {
+    const block = compressFrontend(feUsages, keywords);
     if (block) sections.push(block + "\n");
   }
 
-  if (intents.some((i) => ["frontend_usage", "domain_overview"].includes(i)) && filteredStores.length > 0) {
-    const block = compressStores(filteredStores, keywords);
+  if (intents.some((i) => ["frontend_usage", "domain_overview"].includes(i)) && stores.length > 0) {
+    const block = compressStores(stores, keywords);
     if (block) sections.push(block + "\n");
   }
 
-  // ── Section 5: Dependencies (enhanced with cross-project links) ──
+  // ── Section 5: Dependencies ──
   sections.push(`### Dependencies`);
   const deps: string[] = [];
 
-  // Cross-project dependencies via entity links
   for (const entity of entities.slice(0, 5)) {
     if (entity.links.length > 0 && entity.backend.schemas.length > 0) {
       const schemaNames = entity.backend.schemas.map((s) => s.tableName).join(",");
@@ -339,17 +288,15 @@ export async function smartContext(config: RepoConfig, args: SmartContextArgs) {
     }
   }
 
-  // Schema associations
-  if (filteredSchemas.length > 0) {
-    for (const s of filteredSchemas) {
+  if (schemas.length > 0) {
+    for (const s of schemas) {
       if (s.associations.length > 0) {
         deps.push(`${s.tableName} → ${s.associations.map((a) => `${a.type} ${a.name}(${a.target})`).join(", ")}`);
       }
     }
   }
-  // Store → API
-  if (filteredStores.length > 0) {
-    const storeApis = filteredStores
+  if (stores.length > 0) {
+    const storeApis = stores
       .filter((s) => s.apiCalls.length > 0)
       .map((s) => `${s.store} → ${s.apiCalls.map((c) => c.apiModule).join(",")}`);
     deps.push(...storeApis);
@@ -361,11 +308,10 @@ export async function smartContext(config: RepoConfig, args: SmartContextArgs) {
   }
   sections.push("");
 
-  // ── Section 6: Risks (enhanced with cross-project gap detection) ──
+  // ── Section 6: Risks ──
   sections.push(`### Risks`);
   const risks: string[] = [];
 
-  // Cross-project entity gaps
   const errorGaps = entities.flatMap((e) => e.gaps.filter((g) => g.severity === "error"));
   if (errorGaps.length > 0) {
     risks.push(`**Cross-project gaps (${errorGaps.length}):**`);
@@ -374,17 +320,13 @@ export async function smartContext(config: RepoConfig, args: SmartContextArgs) {
     }
   }
 
-  // Contract mismatches (via diff-engine)
   if (intents.includes("contract_check") || intents.includes("domain_overview")) {
     const contracts = buildContractMap(routes, controllers, feUsages);
     const mismatched = findMismatches(contracts);
-    const filtered = mismatched.filter(
-      (c) => keywords.length === 0 || kwFilter(c.endpoint)
-    );
 
-    if (filtered.length > 0) {
-      risks.push(`**Contract mismatches (${filtered.length}):**`);
-      for (const c of filtered.slice(0, 10)) {
+    if (mismatched.length > 0) {
+      risks.push(`**Contract mismatches (${mismatched.length}):**`);
+      for (const c of mismatched.slice(0, 10)) {
         for (const m of c.mismatches) {
           risks.push(`- [${m.severity.toUpperCase()}] ${m.detail}`);
         }
@@ -392,15 +334,13 @@ export async function smartContext(config: RepoConfig, args: SmartContextArgs) {
     }
   }
 
-  // Coverage gaps
-  if (filteredRoutes.length > 0 && filteredFeUsages.length === 0) {
-    risks.push(`- No frontend coverage for ${filteredRoutes.length} backend route(s)`);
+  if (routes.length > 0 && feUsages.length === 0) {
+    risks.push(`- No frontend coverage for ${routes.length} backend route(s)`);
   }
-  if (filteredFeUsages.length > 0 && filteredRoutes.length === 0) {
-    risks.push(`- Frontend calls ${filteredFeUsages.length} endpoint(s) with no matching backend routes`);
+  if (feUsages.length > 0 && routes.length === 0) {
+    risks.push(`- Frontend calls ${feUsages.length} endpoint(s) with no matching backend routes`);
   }
 
-  // Link confidence warnings
   const lowConfLinks = entities.flatMap((e) => e.links.filter((l) => l.confidence < 0.8));
   if (lowConfLinks.length > 0) {
     risks.push(`- ${lowConfLinks.length} cross-project link(s) with low confidence (fuzzy match)`);

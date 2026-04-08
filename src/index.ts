@@ -368,6 +368,11 @@ server.tool(
       .optional()
       .default(10)
       .describe("Max results to return (default 10)"),
+    mode: z
+      .enum(["compact", "full"])
+      .optional()
+      .default("compact")
+      .describe("'compact' = snippet ~200 chars (saves tokens), 'full' = load entire content"),
   },
   async (args) => {
     try {
