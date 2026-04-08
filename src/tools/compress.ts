@@ -12,6 +12,7 @@ import type {
   StoreAction,
 } from "../types.js";
 import type { ComponentImport } from "../parsers/vue-component-imports.js";
+import type { CrossProjectEntity, RouteEndpointLink } from "./cross-project-linker.js";
 
 // ── Relevance scoring ──
 
@@ -295,6 +296,153 @@ export function compressImpact(
   lines.push(`BE: ${routeCount} routes, ${schemaCount} schemas | FE: ${feCallCount} calls, ${components.length} components`);
   if (components.length > 0) {
     lines.push(`Components: ${compNames}`);
+  }
+
+  return lines.join("\n");
+}
+
+// ── Cross-project compressed formatters ──
+
+/**
+ * Compress a list of cross-project entities into a compact view.
+ * Shows the full chain: Schema → Controller → Route ↔ API → Store → Component
+ */
+export function compressCrossProjectEntities(
+  entities: CrossProjectEntity[],
+  keywords: string[],
+  maxEntities: number = 5
+): string {
+  if (entities.length === 0) return "";
+
+  const lines: string[] = [`### Cross-Project Entities(${entities.length}):`];
+
+  for (const entity of entities.slice(0, maxEntities)) {
+    const beCount = entity.backend.routes.length + entity.backend.schemas.length;
+    const feCount = entity.frontend.apiCalls.length + entity.frontend.stores.length + entity.frontend.components.length;
+    const linkCount = entity.links.length;
+    const gapCount = entity.gaps.filter((g) => g.severity === "error").length;
+
+    const tag = gapCount > 0 ? " ⚠" : linkCount > 0 ? " ✓" : "";
+    lines.push(`\n**${entity.domain}**${tag} (BE:${beCount} FE:${feCount} links:${linkCount})`);
+
+    // Show linked chains
+    if (entity.links.length > 0) {
+      for (const link of entity.links.slice(0, 8)) {
+        const ctrl = link.controller
+          ? `${link.route.controller}.${link.route.action}`
+          : link.route.controller;
+        const feCalls = link.frontendCalls
+          .map((f) => `${f.module}.${f.functionName}`)
+          .join(",");
+        const conf = link.confidence < 1 ? ` ~${Math.round(link.confidence * 100)}%` : "";
+        lines.push(`  ${link.route.method.padEnd(6)} ${link.route.path} → ${ctrl} ↔ ${feCalls}${conf}`);
+      }
+      if (entity.links.length > 8) {
+        lines.push(`  +${entity.links.length - 8} more links`);
+      }
+    }
+
+    // Show stores → components
+    if (entity.frontend.stores.length > 0) {
+      const storeNames = [...new Set(entity.frontend.stores.map((s) => s.store))];
+      const compNames = entity.frontend.components.slice(0, 5).map((c) => c.component);
+      const compSuffix = entity.frontend.components.length > 5
+        ? ` +${entity.frontend.components.length - 5}`
+        : "";
+      lines.push(`  Stores: ${storeNames.join(", ")} → Components: ${compNames.join(", ")}${compSuffix}`);
+    }
+
+    // Show gaps (errors only)
+    const errors = entity.gaps.filter((g) => g.severity === "error");
+    if (errors.length > 0) {
+      for (const gap of errors.slice(0, 3)) {
+        lines.push(`  ⚠ ${gap.detail}`);
+      }
+    }
+  }
+
+  if (entities.length > maxEntities) {
+    lines.push(`\n+${entities.length - maxEntities} more entities`);
+  }
+
+  return lines.join("\n");
+}
+
+/**
+ * Compress route↔frontend links into a compact cross-project flow view.
+ */
+export function compressCrossProjectLinks(
+  links: RouteEndpointLink[],
+  keywords: string[]
+): string {
+  if (links.length === 0) return "";
+
+  // Score and sort by relevance
+  const scored = links
+    .map((link) => ({
+      link,
+      score: scoreRelevance(link.route.path, keywords) +
+        scoreRelevance(link.route.controller, keywords) +
+        link.frontendCalls.reduce((s, f) => s + scoreRelevance(f.module, keywords), 0),
+    }))
+    .sort((a, b) => b.score - a.score);
+
+  const lines: string[] = [`### Cross-Project Links(${links.length}):`];
+
+  for (const { link, score } of scored.slice(0, 15)) {
+    const feCalls = link.frontendCalls
+      .map((f) => `${f.module}.${f.functionName}`)
+      .join(", ");
+    const conf = link.confidence < 1 ? ` ~${Math.round(link.confidence * 100)}%` : "";
+
+    if (score >= 3) {
+      // High relevance: full detail
+      lines.push(`**${link.route.method} ${link.route.path}**`);
+      lines.push(`  BE: ${link.route.controller}.${link.route.action}`);
+      lines.push(`  FE: ${feCalls}${conf}`);
+      if (link.controller) {
+        const params = link.controller.params
+          .filter((p) => p.source !== "conn_assigns")
+          .map((p) => p.name)
+          .join(", ");
+        lines.push(`  Params: ${params || "(none)"} → ${link.controller.responseType}`);
+      }
+    } else {
+      // Compact
+      lines.push(`${link.route.method.padEnd(6)} ${link.route.path} ↔ ${feCalls}${conf}`);
+    }
+  }
+
+  if (links.length > 15) {
+    lines.push(`+${links.length - 15} more links`);
+  }
+
+  return lines.join("\n");
+}
+
+/**
+ * Compress cross-project gaps into actionable warnings.
+ */
+export function compressCrossProjectGaps(
+  entities: CrossProjectEntity[]
+): string {
+  const allGaps = entities.flatMap((e) => e.gaps.map((g) => ({ domain: e.domain, ...g })));
+  if (allGaps.length === 0) return "";
+
+  const errors = allGaps.filter((g) => g.severity === "error");
+  const warnings = allGaps.filter((g) => g.severity === "warning");
+  const infos = allGaps.filter((g) => g.severity === "info");
+
+  const lines: string[] = [`### Cross-Project Gaps(${allGaps.length}: ${errors.length}E ${warnings.length}W ${infos.length}I):`];
+
+  for (const gap of errors.slice(0, 5)) {
+    lines.push(`[ERROR] ${gap.domain}: ${gap.detail}`);
+  }
+  for (const gap of warnings.slice(0, 3)) {
+    lines.push(`[WARN] ${gap.domain}: ${gap.detail}`);
+  }
+  if (infos.length > 0) {
+    lines.push(`[INFO] ${infos.length} route(s) without frontend callers`);
   }
 
   return lines.join("\n");

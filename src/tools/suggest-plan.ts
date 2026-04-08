@@ -17,8 +17,13 @@ import {
   compressStores,
   compressContexts,
   compressImpact,
+  compressCrossProjectEntities,
+  compressCrossProjectGaps,
   extractTaskWords,
 } from "./compress.js";
+import {
+  buildEntityMap,
+} from "./cross-project-linker.js";
 import type { RepoConfig } from "../types.js";
 
 export interface SuggestPlanArgs {
@@ -90,8 +95,14 @@ export async function suggestPlan(config: RepoConfig, args: SuggestPlanArgs) {
   const kwFilter = (text: string) =>
     keywords.length === 0 || keywords.some((kw) => text.toLowerCase().includes(kw));
 
+  // Build cross-project entity map
+  const entities = buildEntityMap(
+    routes, controllers, schemas, contexts, feUsages, stores, components,
+    keywords.length > 0 ? keywords : undefined
+  );
+
   sections.push(`## Plan gợi ý: "${args.task}"`);
-  sections.push(`_Action: ${action} | Keywords: ${keywords.join(", ") || "(general)"}_\n`);
+  sections.push(`_Action: ${action} | Keywords: ${keywords.join(", ") || "(general)"} | Entities: ${entities.length}_\n`);
 
   // ── 1. Business rules từ memory ──
   sections.push(`### 1. Business rules đã lưu (từ memory)`);
@@ -179,6 +190,15 @@ export async function suggestPlan(config: RepoConfig, args: SuggestPlanArgs) {
   const storeBlock = compressStores(relatedStores, keywords);
   if (storeBlock) sections.push("\n" + storeBlock);
 
+  // Cross-project entity view
+  if (entities.length > 0) {
+    const entityBlock = compressCrossProjectEntities(entities, keywords, detailed ? 5 : 3);
+    if (entityBlock) sections.push("\n" + entityBlock);
+
+    const gapBlock = compressCrossProjectGaps(entities);
+    if (gapBlock) sections.push("\n" + gapBlock);
+  }
+
   sections.push("");
 
   // ── 3. Plan theo loại action ──
@@ -199,28 +219,42 @@ export async function suggestPlan(config: RepoConfig, args: SuggestPlanArgs) {
   }
   sections.push("");
 
-  // ── 4. Impact analysis ──
+  // ── 4. Impact analysis (enhanced with cross-project entities) ──
   sections.push(`### 4. Đánh giá ảnh hưởng`);
 
-  // Trace frontend impact
+  // Use entity data for accurate impact
+  const entityComponents = entities.flatMap((e) => e.frontend.components);
+  const uniqueEntityComponents = [...new Map(entityComponents.map((c) => [c.filePath, c])).values()];
+
+  // Fallback: also check via store names for components not in entities
   const storeNames = [...new Set(relatedStores.map((s) => s.store.toLowerCase()))];
-  const affectedComponents = components.filter((c) =>
+  const storeComponents = components.filter((c) =>
     c.storeImports.some((si) => storeNames.some((sn) => si.toLowerCase().includes(sn)))
   );
-
-  const totalImpact = relatedFeUsages.length + relatedStores.length + affectedComponents.length;
+  // Merge and deduplicate
+  const allAffectedComponents = [...new Map(
+    [...uniqueEntityComponents, ...storeComponents].map((c) => [c.filePath, c])
+  ).values()];
 
   sections.push(compressImpact(
     relatedRoutes.length,
     relatedSchemas.length,
     relatedFeUsages.length,
-    affectedComponents
+    allAffectedComponents
   ));
+
+  // Cross-project link summary
+  const totalLinks = entities.reduce((s, e) => s + e.links.length, 0);
+  const totalGaps = entities.reduce((s, e) => s + e.gaps.filter((g) => g.severity === "error").length, 0);
+  if (totalLinks > 0 || totalGaps > 0) {
+    sections.push(`Cross-project: ${totalLinks} linked endpoint(s), ${totalGaps} gap(s)`);
+  }
   sections.push("");
 
   // ── 5. Checklist ──
   sections.push(`### 5. Checklist`);
-  sections.push(generateChecklist(action, keywords, relatedSchemas, allMemories));
+  const entityGapCount = entities.reduce((s, e) => s + e.gaps.filter((g) => g.severity === "error").length, 0);
+  sections.push(generateChecklist(action, keywords, relatedSchemas, allMemories, entities.length, entityGapCount));
 
   return sections.join("\n");
 }
@@ -419,7 +453,8 @@ function generateIntegratePlan(
 
 function generateChecklist(
   action: string, keywords: string[],
-  schemas: any[], memories: any[]
+  schemas: any[], memories: any[],
+  entityCount?: number, gapCount?: number
 ): string {
   const items: string[] = [];
 
@@ -443,6 +478,15 @@ function generateChecklist(
   if (action === "remove") {
     items.push(`- [ ] Xác nhận không có code nào phụ thuộc`);
     items.push(`- [ ] Tạo migration xóa table/columns`);
+  }
+
+  // Cross-project items
+  if (entityCount && entityCount > 0) {
+    items.push(`- [ ] Kiểm tra cross-project links (${entityCount} entity liên quan)`);
+    items.push(`- [ ] Update cả backend + frontend trong cùng PR nếu thay đổi API contract`);
+  }
+  if (gapCount && gapCount > 0) {
+    items.push(`- [ ] Fix ${gapCount} cross-project gap(s) trước khi deploy`);
   }
 
   // Common ending
